@@ -1,6 +1,6 @@
-# spatial-lakehouse-mcp
+# Spatial Lakehouse MCP
 
-Iceberg-native geospatial MCP server powered by DuckDB.
+Iceberg-native geospatial MCP server powered by DuckDB. Part of the [LakehouseAI](../README.md) monorepo.
 
 Provides 18 tools for catalog discovery, spatial queries, analysis, and data management over an Apache Iceberg lakehouse. An LLM agent connects via the Model Context Protocol (MCP) and can explore schemas, run spatial SQL, perform point-in-polygon aggregation, export GeoJSON, and more — all through a single DuckDB connection.
 
@@ -71,7 +71,7 @@ DuckDB (in-process, :memory:)
 ## Project Structure
 
 ```
-spatial-lakehouse-mcp/
+icebergmcp/
 ├── pyproject.toml
 ├── Dockerfile
 ├── .env.example
@@ -98,8 +98,8 @@ spatial-lakehouse-mcp/
 ### 1. Install
 
 ```bash
-git clone https://github.com/aoneil42/Spatial-Lakehouse-MCP.git
-cd Spatial-Lakehouse-MCP
+git clone https://github.com/aoneil42/LakehouseAI.git
+cd LakehouseAI/icebergmcp
 
 python -m venv .venv
 source .venv/bin/activate

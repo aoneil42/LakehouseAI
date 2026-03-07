@@ -1,6 +1,6 @@
 # Iceberg Geospatial API Server
 
-A containerized Python service that serves geospatial data stored in Apache Iceberg tables through two API surfaces:
+Part of the [LakehouseAI](../../README.md) monorepo. A Python service that serves geospatial data stored in Apache Iceberg tables through two API surfaces:
 
 1. **OGC API Features** (via pygeoapi) — standards-based geospatial API serving GeoJSON, GeoArrow/Arrow IPC, and HTML
 2. **Esri GeoServices REST** (via FastAPI) — `/FeatureServer` endpoints serving Esri PBF (protobuf) and Esri JSON for ArcGIS clients
@@ -37,7 +37,6 @@ Both API surfaces share a common **Iceberg Query Service** module that handles a
 
 ```
 iceberg-geo-api/
-├── docker-compose.yml
 ├── Dockerfile.pygeoapi
 ├── Dockerfile.geoservices
 ├── pyproject.toml
@@ -108,19 +107,18 @@ ICEBERG_CATALOG_CONFIG=config/catalog.yml pygeoapi serve --server-config config/
 ICEBERG_CATALOG_CONFIG=config/catalog.yml uvicorn iceberg_geo.geoservices.app:app --port 8001 --reload
 ```
 
-### Docker Compose
+### Docker Compose (via parent stack)
+
+Both API services are orchestrated by the parent [`lakehouse/docker-compose.yml`](../docker-compose.yml). From the `lakehouse/` directory:
 
 ```bash
-docker compose up --build
+docker compose up -d
 ```
-
-This starts three services:
 
 | Service | Port | Description |
 |---------|------|-------------|
-| pygeoapi | 5000 | OGC API Features |
-| geoservices | 8001 | Esri GeoServices REST |
-| rest-catalog | 8181 | Apache Iceberg REST catalog |
+| pygeoapi | /ogc/ (via nginx) | OGC API Features |
+| geoservices | /esri/ (via nginx) | Esri GeoServices REST |
 
 ### Test Endpoints
 

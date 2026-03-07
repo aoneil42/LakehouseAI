@@ -1,6 +1,6 @@
 # Spatial Lakehouse Agent
 
-Natural-language spatial query agent for the Iceberg lakehouse. Users type questions in the webmap chat panel, the agent translates to spatial SQL, executes via MCP tools, and pushes results to the map in real time. Runs as a standalone container (port 8090) joining the lakehouse docker-compose network — all data interaction goes through the MCP server's 19 typed tools via Streamable HTTP.
+Part of the [LakehouseAI](../README.md) monorepo. Natural-language spatial query agent for the Iceberg lakehouse. Users type questions in the webmap chat panel, the agent translates to spatial SQL, executes via MCP tools, and pushes results to the map in real time. Runs as a standalone container (port 8090) joining the lakehouse docker-compose network — all data interaction goes through the MCP server's 19 typed tools via Streamable HTTP.
 
 ## Architecture
 
@@ -51,9 +51,9 @@ User (webmap chat panel)
 ## Quick Start
 
 ```bash
-# From lakehouse repo root:
+# From the lakehouse/ directory:
 docker compose -f docker-compose.yml \
-  -f ../spatial-lakehouse-agent/docker-compose.agent.yml up -d
+  -f ../spatialagent/docker-compose.agent.yml up -d
 ```
 
 ## Dev Setup

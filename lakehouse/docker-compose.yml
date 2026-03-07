@@ -202,43 +202,6 @@ services:
       retries: 3
       start_period: 15s
 
-  # ─── MCP Server: MotherDuck (alternative — generic DuckDB) ──────
-  #   Generic DuckDB MCP via mcp-server-motherduck.
-  #   Activate:  docker compose --profile motherduck up -d
-  #   Endpoint: http://localhost:8083/mcp
-  motherduck-mcp:
-    build:
-      context: ./mcp
-      dockerfile: Dockerfile
-    container_name: motherduck-mcp
-    profiles: ["motherduck"]
-    ports:
-      - "8083:8082"
-    environment:
-      <<: *garage-creds
-      MCP_DB_PATH: ":memory:"
-      MCP_TRANSPORT: "http"
-      MCP_HOST: "0.0.0.0"
-      MCP_PORT: "8082"
-    depends_on:
-      lakekeeper:
-        condition: service_healthy
-    networks:
-      - lakehouse
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 2g
-    logging: *default-logging
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf -o /dev/null -w '%{http_code}' http://localhost:8082/mcp | grep -qE '400|405|406' || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
   # ─── Feature API: FastAPI + DuckDB ────────────────────────────────
   #   Live spatial queries against Iceberg tables via DuckDB.
   #   Endpoint: http://localhost:8000/api/features/{layer}
