@@ -72,9 +72,20 @@
     <div id="map-container">
       <div id="map"></div>
       <div id="status"></div>
+      <div id="coord-display" class="coord-display"></div>
       <div id="popup" class="popup hidden"></div>
       <div id="identify-panel" class="identify-panel hidden"></div>
       <div id="select-box"></div>
+    </div>
+    <div id="catalog-modal" class="catalog-modal hidden">
+      <div class="catalog-modal-backdrop"></div>
+      <div class="catalog-modal-content">
+        <div class="catalog-modal-header">
+          <h2>Add Data</h2>
+          <button class="catalog-modal-close">&#x2715;</button>
+        </div>
+        <div class="catalog-modal-body" id="catalog-modal-tree"></div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

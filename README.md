@@ -1,12 +1,12 @@
 # LakehouseAI
 
-A geospatial data lakehouse with natural-language spatial queries. Upload geospatial data, serve it through three API standards (OGC, Esri, GeoParquet), visualize on a deck.gl webmap, and query with plain English via an AI agent.
+A geospatial data lakehouse with natural-language spatial queries. Upload geospatial data, serve it through three API standards (OGC, Esri, GeoParquet), visualize on a full-featured deck.gl webmap with GIS tools, and query with plain English via an AI agent.
 
 ## Components
 
 | Directory | Description |
 |-----------|-------------|
-| [`lakehouse/`](lakehouse/) | Core platform — containerized stack with Iceberg storage, DuckDB, three API surfaces, and a deck.gl webmap |
+| [`lakehouse/`](lakehouse/) | Core platform — containerized stack with Iceberg storage, DuckDB, three API surfaces, and a deck.gl webmap with GIS tools (identify, measure, attribute table, symbology, time slider, export) |
 | [`icebergmcp/`](icebergmcp/) | MCP server — 18 tools for LLM agents to discover, query, and analyze spatial data |
 | [`spatialagent/`](spatialagent/) | Spatial agent — translates natural language to spatial SQL, executes via MCP, pushes results to the map |
 
@@ -15,7 +15,7 @@ A geospatial data lakehouse with natural-language spatial queries. Upload geospa
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Webmap (deck.gl v9)                       │
-│         MapLibre + GeoArrow pipeline + chat panel           │
+│   MapLibre + GeoArrow + identify/measure/symbology/time    │
 └──────────┬──────────────────────────────────┬───────────────┘
            │ REST/GeoParquet                  │ WebSocket
            ▼                                  ▼

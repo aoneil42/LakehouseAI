@@ -8,6 +8,15 @@ export type LayerZoomCallback = (ns: string, layer: string) => void;
 
 export type RefreshCallback = () => void;
 
+export type OpacityChangeCallback = (key: string, opacity: number) => void;
+
+export type OpenAttributeTableCallback = (ns: string, layer: string) => void;
+export type OpenSymbologyCallback = (ns: string, layer: string) => void;
+export type SearchCallback = (query: string) => void;
+export type MeasureCallback = (mode: "distance" | "area" | "none") => void;
+export type ScreenshotCallback = () => void;
+export type ResetMapCallback = () => void;
+
 /** Per-namespace table lists: { colorado: ["points","lines","polygons"] } */
 export type NsTableMap = Record<string, string[]>;
 
@@ -205,10 +214,24 @@ function renderTreeNodes(nodes: CatalogNode[], depth: number): string {
             <span class="layer-label">${titleCase(table)}</span>
             <span class="layer-count" data-lcount="${ns}/${table}">\u2014</span>
           </label>
+          <input type="range" class="opacity-slider" data-opacity-key="${ns}/${table}" min="0" max="100" value="100" title="Opacity" />
         </div>`;
       }
     })
     .join("");
+}
+
+export interface CatalogBrowserCallbacks {
+  onToggle: LayerToggleCallback;
+  onZoom: LayerZoomCallback;
+  onRefresh?: RefreshCallback;
+  onOpacityChange?: OpacityChangeCallback;
+  onOpenAttributeTable?: OpenAttributeTableCallback;
+  onOpenSymbology?: OpenSymbologyCallback;
+  onSearch?: SearchCallback;
+  onMeasure?: MeasureCallback;
+  onScreenshot?: ScreenshotCallback;
+  onResetMap?: ResetMapCallback;
 }
 
 export function initCatalogBrowser(
@@ -216,37 +239,146 @@ export function initCatalogBrowser(
   onToggle: LayerToggleCallback,
   onZoom: LayerZoomCallback,
   onRefresh?: RefreshCallback,
+  onOpacityChange?: OpacityChangeCallback,
+  callbacks?: Partial<CatalogBrowserCallbacks>,
 ): void {
   globalColorIndex = 0;
 
   const sidebarNav = document.querySelector(".sidebar-nav")!;
 
-  // Insert catalog browser as the first section
+  // Merge legacy positional params with callbacks object
+  const cbs: CatalogBrowserCallbacks = {
+    onToggle,
+    onZoom,
+    onRefresh,
+    onOpacityChange,
+    ...callbacks,
+  };
+
+  // ── Sidebar section: Layers legend + tools ──────────────────────────
   const browserSection = document.createElement("div");
   browserSection.id = "catalog-browser";
   browserSection.className = "sidebar-section";
   browserSection.innerHTML = `
-    <h2 class="sidebar-section-title">Catalog</h2>
-    <div id="catalog-tree" class="catalog-tree">${renderTreeNodes(tree, 0)}</div>
+    <h2 class="sidebar-section-title">Layers</h2>
+    <div class="search-container" style="position:relative;">
+      <input type="text" class="search-input" placeholder="Search coordinates or places..." />
+      <div class="search-results" style="display:none;"></div>
+    </div>
+    <div id="sidebar-layers"></div>
+    <button id="add-data-btn" class="sidebar-add-data-btn">+ Add Data</button>
     <div class="catalog-toolbar">
       <div class="toolbar-row">
         <label class="toolbar-label">Basemap</label>
         <select id="basemap-select" class="toolbar-select"></select>
       </div>
-      <div class="toolbar-row">
+      <div class="toolbar-row toolbar-row-btns">
         <button id="refresh-btn" class="toolbar-btn" title="Reload visible layers">&#8635; Refresh</button>
+        <button id="reset-map-btn" class="toolbar-btn toolbar-btn-danger" title="Remove all layers and reset view">&#x21BA; Reset</button>
+      </div>
+      <div class="tools-section">
+        <div class="tools-row">
+          <button class="tool-btn" id="measure-dist-btn" title="Measure distance (geodesic)">Dist</button>
+          <button class="tool-btn" id="measure-area-btn" title="Measure area (geodesic)">Area</button>
+        </div>
       </div>
     </div>
   `;
   sidebarNav.insertBefore(browserSection, sidebarNav.firstChild);
 
-  const treeContainer = document.getElementById("catalog-tree")!;
-  wireLayerTreeEvents(treeContainer, onToggle, onZoom);
-  initContextMenu(treeContainer, onZoom);
+  // ── Catalog modal: tree browser ─────────────────────────────────────
+  const modalBody = document.getElementById("catalog-modal-tree");
+  if (modalBody) {
+    modalBody.innerHTML = `
+      <div class="catalog-modal-search">
+        <input type="text" class="catalog-filter-input" placeholder="Filter layers..." />
+      </div>
+      <div id="catalog-tree" class="catalog-tree">${renderTreeNodes(tree, 0)}</div>
+    `;
+    const treeContainer = document.getElementById("catalog-tree")!;
+    wireLayerTreeEvents(treeContainer, cbs.onToggle, cbs.onZoom);
+    // Context menu is on the sidebar legend only, not the Add Data modal
+
+    // Opacity slider events in catalog tree
+    if (cbs.onOpacityChange) {
+      treeContainer.addEventListener("input", (e) => {
+        const target = e.target as HTMLInputElement;
+        if (!target.classList.contains("opacity-slider")) return;
+        const key = target.dataset.opacityKey;
+        if (key) cbs.onOpacityChange!(key, parseInt(target.value, 10) / 100);
+      });
+    }
+
+    // Filter input for catalog tree
+    const filterInput = modalBody.querySelector(".catalog-filter-input") as HTMLInputElement;
+    if (filterInput) {
+      let filterTimer: ReturnType<typeof setTimeout>;
+      filterInput.addEventListener("input", () => {
+        clearTimeout(filterTimer);
+        filterTimer = setTimeout(() => {
+          const q = filterInput.value.toLowerCase().trim();
+          treeContainer.querySelectorAll<HTMLElement>(".cat-table").forEach((node) => {
+            const label = node.querySelector(".layer-label")?.textContent?.toLowerCase() ?? "";
+            node.style.display = label.includes(q) ? "" : "none";
+          });
+          // Show/hide namespaces that have visible children
+          treeContainer.querySelectorAll<HTMLElement>(".cat-ns").forEach((nsNode) => {
+            const hasVisible = nsNode.querySelector('.cat-table:not([style*="display: none"])');
+            nsNode.style.display = hasVisible || !q ? "" : "none";
+          });
+        }, 200);
+      });
+    }
+  }
+
+  // "Add Data" button opens the catalog modal
+  document.getElementById("add-data-btn")?.addEventListener("click", () => {
+    openCatalogModal();
+  });
 
   document.getElementById("refresh-btn")?.addEventListener("click", () => {
-    onRefresh?.();
+    cbs.onRefresh?.();
   });
+
+  document.getElementById("reset-map-btn")?.addEventListener("click", () => {
+    cbs.onResetMap?.();
+  });
+
+  // Search box (coordinate/geocode search, stays in sidebar)
+  if (cbs.onSearch) {
+    const searchInput = browserSection.querySelector(".search-input") as HTMLInputElement;
+    let searchTimer: ReturnType<typeof setTimeout>;
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        clearTimeout(searchTimer);
+        cbs.onSearch!(searchInput.value.trim());
+      }
+    });
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        const q = searchInput.value.trim();
+        if (q.length >= 3) cbs.onSearch!(q);
+      }, 600);
+    });
+  }
+
+  // Measure buttons
+  if (cbs.onMeasure) {
+    const distBtn = document.getElementById("measure-dist-btn")!;
+    const areaBtn = document.getElementById("measure-area-btn")!;
+    distBtn.addEventListener("click", () => {
+      const isActive = distBtn.classList.toggle("active");
+      areaBtn.classList.remove("active");
+      cbs.onMeasure!(isActive ? "distance" : "none");
+    });
+    areaBtn.addEventListener("click", () => {
+      const isActive = areaBtn.classList.toggle("active");
+      distBtn.classList.remove("active");
+      cbs.onMeasure!(isActive ? "area" : "none");
+    });
+  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -602,7 +734,12 @@ function dismissContextMenu(): void {
   }
 }
 
-function initContextMenu(container: HTMLElement, onZoom: (ns: string, layer: string) => void): void {
+function initContextMenu(
+  container: HTMLElement,
+  onZoom: (ns: string, layer: string) => void,
+  onOpenAttributeTable?: OpenAttributeTableCallback,
+  onOpenSymbology?: OpenSymbologyCallback,
+): void {
   container.addEventListener("contextmenu", (e) => {
     const tableNode = (e.target as HTMLElement).closest(".cat-table");
     if (!tableNode) return;
@@ -645,16 +782,32 @@ function initContextMenu(container: HTMLElement, onZoom: (ns: string, layer: str
     menu.style.top = `${e.clientY}px`;
     menu.innerHTML = `
       <a href="#" class="ctx-zoom">Zoom to extent</a>
+      ${onOpenAttributeTable ? '<a href="#" class="ctx-attr-table">Open attribute table</a>' : ''}
+      ${onOpenSymbology ? '<a href="#" class="ctx-symbology">Style layer...</a>' : ''}
       <div class="ctx-divider"></div>
       <div class="ctx-label">API Endpoints</div>
       <a href="/api/features/${ns}/${table}?limit=10" target="_blank">Feature API</a>
       <a href="/ogc/collections/${ogcCollection}/items" target="_blank">OGC API Features</a>
       <a href="/esri/rest/services/${ns}/FeatureServer/${layerIndex}" target="_blank">Esri GeoServices</a>
+      <div class="ctx-divider"></div>
+      <div class="ctx-label">Coordinate Reference System</div>
+      <span class="ctx-info">Storage: EPSG:4326 (WGS 84)</span>
+      <span class="ctx-info">Display: EPSG:3857 (Web Mercator)</span>
     `;
     menu.querySelector(".ctx-zoom")!.addEventListener("click", (ev) => {
       ev.preventDefault();
       dismissContextMenu();
       onZoom(ns, table);
+    });
+    menu.querySelector(".ctx-attr-table")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      onOpenAttributeTable!(ns, table);
+    });
+    menu.querySelector(".ctx-symbology")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      onOpenSymbology!(ns, table);
     });
     document.body.appendChild(menu);
     activeContextMenu = menu;
@@ -677,5 +830,292 @@ function initContextMenu(container: HTMLElement, onZoom: (ns: string, layer: str
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") dismissContextMenu();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Search Results Dropdown
+// ---------------------------------------------------------------------------
+
+export interface SearchResult {
+  name: string;
+  lat: number;
+  lon: number;
+  bbox?: [number, number, number, number];
+}
+
+export function showSearchResults(
+  results: SearchResult[],
+  onSelect: (result: SearchResult) => void
+): void {
+  const dropdown = document.querySelector(".search-results") as HTMLElement;
+  if (!dropdown) return;
+
+  dropdown.innerHTML = results
+    .map(
+      (r, i) =>
+        `<div class="search-result-item" data-idx="${i}">${r.name}</div>`
+    )
+    .join("");
+  dropdown.style.display = results.length > 0 ? "block" : "none";
+
+  dropdown.addEventListener("click", (e) => {
+    const item = (e.target as HTMLElement).closest(".search-result-item") as HTMLElement;
+    if (!item) return;
+    const idx = parseInt(item.dataset.idx!, 10);
+    onSelect(results[idx]);
+    hideSearchResults();
+  });
+}
+
+export function hideSearchResults(): void {
+  const dropdown = document.querySelector(".search-results") as HTMLElement;
+  if (dropdown) dropdown.style.display = "none";
+}
+
+/** Deactivate measure buttons in the toolbar */
+export function deactivateMeasureButtons(): void {
+  document.getElementById("measure-dist-btn")?.classList.remove("active");
+  document.getElementById("measure-area-btn")?.classList.remove("active");
+}
+
+// ---------------------------------------------------------------------------
+// Active Layers Legend (floating cards on map)
+// ---------------------------------------------------------------------------
+
+export interface ActiveLayerInfo {
+  key: string;
+  name: string;
+  count: number;
+  color: string;
+  visible: boolean;
+}
+
+export interface ActiveLayerCallbacks {
+  onToggleVisibility: (key: string) => void;
+  onRemove: (key: string) => void;
+  onReorder: (orderedKeys: string[]) => void;
+  onOpacityChange?: (key: string, opacity: number) => void;
+  onZoom?: (ns: string, layer: string) => void;
+  onOpenAttributeTable?: (ns: string, layer: string) => void;
+  onOpenSymbology?: (ns: string, layer: string) => void;
+}
+
+let activeLayerCallbacks: ActiveLayerCallbacks | null = null;
+let legendEventsWired = false;
+let legendDraggedKey: string | null = null;
+
+export function initActiveLayers(callbacks: ActiveLayerCallbacks): void {
+  activeLayerCallbacks = callbacks;
+}
+
+/**
+ * Wire event listeners on the legend container ONCE.  Called on first render
+ * only; all handlers use event delegation so they work with any card HTML
+ * that gets swapped in later by renderActiveLayers().
+ */
+function wireLegendEvents(container: HTMLElement): void {
+  if (legendEventsWired) return;
+  legendEventsWired = true;
+
+  // Click actions (toggle visibility, remove)
+  container.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest("[data-action]") as HTMLElement;
+    if (!btn) return;
+    const card = btn.closest(".active-layer-card") as HTMLElement;
+    if (!card) return;
+    const key = card.dataset.layerKey!;
+    if (btn.dataset.action === "toggle") {
+      activeLayerCallbacks?.onToggleVisibility(key);
+    } else if (btn.dataset.action === "remove") {
+      activeLayerCallbacks?.onRemove(key);
+    }
+  });
+
+  // Opacity slider
+  container.addEventListener("input", (e) => {
+    const target = e.target as HTMLInputElement;
+    if (!target.classList.contains("sidebar-layer-opacity")) return;
+    const key = target.dataset.opacityKey;
+    if (key && activeLayerCallbacks?.onOpacityChange) {
+      activeLayerCallbacks.onOpacityChange(key, parseInt(target.value, 10) / 100);
+    }
+  });
+
+  // Drag-and-drop reorder
+  // Prevent child interactive elements from hijacking drag
+  container.addEventListener("mousedown", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "BUTTON" || target.closest("button")) return;
+    const card = target.closest(".active-layer-card") as HTMLElement;
+    if (card) card.setAttribute("draggable", "true");
+  });
+
+  container.addEventListener("dragstart", (e) => {
+    const card = (e.target as HTMLElement).closest(".active-layer-card") as HTMLElement;
+    if (!card) return;
+    legendDraggedKey = card.dataset.layerKey!;
+    card.classList.add("dragging");
+    const dt = (e as DragEvent).dataTransfer!;
+    dt.effectAllowed = "move";
+    dt.setData("text/plain", legendDraggedKey);
+  });
+
+  container.addEventListener("dragend", (e) => {
+    const card = (e.target as HTMLElement).closest(".active-layer-card") as HTMLElement;
+    if (card) card.classList.remove("dragging");
+    container.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+    legendDraggedKey = null;
+  });
+
+  container.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    (e as DragEvent).dataTransfer!.dropEffect = "move";
+    const card = (e.target as HTMLElement).closest(".active-layer-card") as HTMLElement;
+    if (card && card.dataset.layerKey !== legendDraggedKey) {
+      container.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+      card.classList.add("drag-over");
+    }
+  });
+
+  container.addEventListener("drop", (e) => {
+    e.preventDefault();
+    container.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+    const targetCard = (e.target as HTMLElement).closest(".active-layer-card") as HTMLElement;
+    if (!targetCard || !legendDraggedKey) return;
+    const targetKey = targetCard.dataset.layerKey!;
+    if (targetKey === legendDraggedKey) return;
+
+    const cards = [...container.querySelectorAll(".active-layer-card")] as HTMLElement[];
+    const keys = cards.map((c) => c.dataset.layerKey!);
+    const fromIdx = keys.indexOf(legendDraggedKey);
+    const toIdx = keys.indexOf(targetKey);
+    keys.splice(fromIdx, 1);
+    keys.splice(toIdx, 0, legendDraggedKey);
+    activeLayerCallbacks?.onReorder(keys);
+  });
+
+  // Right-click context menu
+  container.addEventListener("contextmenu", (e) => {
+    const card = (e.target as HTMLElement).closest(".active-layer-card") as HTMLElement;
+    if (!card) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dismissContextMenu();
+
+    const key = card.dataset.layerKey!;
+    const slashIdx = key.indexOf("/");
+    const ns = key.slice(0, slashIdx);
+    const table = key.slice(slashIdx + 1);
+    const ogcCollection = `${ns.replace(/\./g, "-")}-${table}`;
+
+    const menu = document.createElement("div");
+    menu.className = "layer-context-menu";
+    menu.style.left = `${(e as MouseEvent).clientX}px`;
+    menu.style.top = `${(e as MouseEvent).clientY}px`;
+    menu.innerHTML = `
+      <a href="#" class="ctx-zoom">Zoom to extent</a>
+      <a href="#" class="ctx-attr-table">Open attribute table</a>
+      <a href="#" class="ctx-symbology">Style layer\u2026</a>
+      <div class="ctx-divider"></div>
+      <div class="ctx-label">API Endpoints</div>
+      <a href="/api/features/${ns}/${table}?limit=10" target="_blank">Feature API</a>
+      <a href="/ogc/collections/${ogcCollection}/items" target="_blank">OGC API Features</a>
+      <a href="/esri/rest/services/${ns}/FeatureServer" target="_blank">Esri GeoServices</a>
+      <div class="ctx-divider"></div>
+      <div class="ctx-label">Coordinate Reference System</div>
+      <span class="ctx-info">Storage: EPSG:4326 (WGS 84)</span>
+      <span class="ctx-info">Display: EPSG:3857 (Web Mercator)</span>
+    `;
+    menu.querySelector(".ctx-zoom")!.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      activeLayerCallbacks?.onZoom?.(ns, table);
+    });
+    menu.querySelector(".ctx-attr-table")!.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      activeLayerCallbacks?.onOpenAttributeTable?.(ns, table);
+    });
+    menu.querySelector(".ctx-symbology")!.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      activeLayerCallbacks?.onOpenSymbology?.(ns, table);
+    });
+    document.body.appendChild(menu);
+    activeContextMenu = menu;
+
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+      menu.style.left = `${(e as MouseEvent).clientX - rect.width}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+      menu.style.top = `${(e as MouseEvent).clientY - rect.height}px`;
+    }
+  });
+
+  // Global dismiss: click outside or Escape key
+  document.addEventListener("mousedown", (e) => {
+    if (activeContextMenu && !activeContextMenu.contains(e.target as Node)) {
+      dismissContextMenu();
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") dismissContextMenu();
+  });
+}
+
+export function renderActiveLayers(layers: ActiveLayerInfo[]): void {
+  const container = document.getElementById("sidebar-layers") ?? document.getElementById("active-layers");
+  if (!container) return;
+
+  // Wire delegated events once on first render
+  wireLegendEvents(container);
+
+  if (layers.length === 0) {
+    container.innerHTML = '<div class="sidebar-no-layers">No layers loaded</div>';
+    return;
+  }
+
+  container.innerHTML = layers
+    .map(
+      (l) => `
+      <div class="active-layer-card" draggable="true" data-layer-key="${l.key}">
+        <span class="active-layer-handle">\u2630</span>
+        <span class="active-layer-swatch" style="background:${l.color}; opacity:${l.visible ? 1 : 0.3}"></span>
+        <span class="active-layer-name" title="${l.key}">${l.name}</span>
+        <span class="active-layer-count">${l.count.toLocaleString()}</span>
+        <input type="range" class="sidebar-layer-opacity" data-opacity-key="${l.key}" min="0" max="100" value="100" title="Opacity" draggable="false" />
+        <button class="active-layer-vis" data-action="toggle" title="${l.visible ? 'Hide' : 'Show'}" draggable="false">${l.visible ? '\u{1F441}' : '\u25CB'}</button>
+        <button class="active-layer-remove" data-action="remove" title="Remove" draggable="false">\u2715</button>
+      </div>`
+    )
+    .join("");
+}
+
+// ---------------------------------------------------------------------------
+// Catalog Modal
+// ---------------------------------------------------------------------------
+
+export function openCatalogModal(): void {
+  const modal = document.getElementById("catalog-modal");
+  if (modal) modal.classList.remove("hidden");
+}
+
+export function closeCatalogModal(): void {
+  const modal = document.getElementById("catalog-modal");
+  if (modal) modal.classList.add("hidden");
+}
+
+export function initCatalogModal(): void {
+  const modal = document.getElementById("catalog-modal");
+  if (!modal) return;
+
+  modal.querySelector(".catalog-modal-backdrop")?.addEventListener("click", closeCatalogModal);
+  modal.querySelector(".catalog-modal-close")?.addEventListener("click", closeCatalogModal);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) {
+      closeCatalogModal();
+    }
   });
 }

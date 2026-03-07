@@ -5,6 +5,7 @@
  * failures on PathLayer init, stale WebGL buffers after basemap switch).
  */
 
+import { DataType } from "apache-arrow";
 import {
   SolidPolygonLayer,
   PathLayer,
@@ -12,6 +13,7 @@ import {
 } from "@deck.gl/layers";
 import type { Table } from "apache-arrow";
 import type { Layer, Color, PickingInfo } from "@deck.gl/core";
+import type { LayerStyle } from "./symbology";
 
 // ---------------------------------------------------------------------------
 // Geometry type detection from Arrow/GeoArrow metadata
@@ -120,10 +122,43 @@ export function getFeatureProps(
     const col = table.getChild(field.name);
     if (col) {
       const val = col.get(index);
-      props[field.name] = typeof val === "bigint" ? Number(val) : val;
+      props[field.name] = formatPropValue(field, val);
     }
   }
   return props;
+}
+
+/** Format a single property value, converting temporal types to readable strings. */
+function formatPropValue(field: { name: string; type: any }, val: unknown): unknown {
+  if (val == null) return val;
+
+  // Arrow Timestamp → human-readable
+  if (DataType.isTimestamp(field.type)) {
+    const n = typeof val === "bigint" ? Number(val) : Number(val);
+    const units = [1000, 1, 0.001, 0.000001]; // s, ms, us, ns → ms multiplier
+    const ms = n * (units[field.type.unit] ?? 1);
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? n : d.toISOString().replace("T", " ").slice(0, 19);
+  }
+  // Arrow Date → YYYY-MM-DD
+  if (DataType.isDate(field.type)) {
+    const n = typeof val === "bigint" ? Number(val) : Number(val);
+    const ms = field.type.typeId === -14 ? n : n * 86_400_000; // DateMillisecond vs DateDay
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? n : d.toISOString().slice(0, 10);
+  }
+  // Heuristic: BIGINT columns with timestamp-like names
+  if (typeof val === "bigint") {
+    if (/timestamp|created|updated|modified|_at$|_time$|_date$|datetime|epoch/i.test(field.name)) {
+      const n = Number(val);
+      if (n > 631_152_000_000 && n < 4_102_444_800_000) {
+        const d = new Date(n);
+        if (!isNaN(d.getTime())) return d.toISOString().replace("T", " ").slice(0, 19);
+      }
+    }
+    return Number(val);
+  }
+  return val;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +175,9 @@ export function buildPointLayer(
   table: Table,
   visible: boolean,
   onClick?: FeatureClickHandler,
-  id: string = "points"
+  id: string = "points",
+  opacity: number = 1.0,
+  style?: LayerStyle
 ): Layer {
   const geomCol = table.getChild("geometry")!;
   const batch = geomCol.data[0];
@@ -158,8 +195,12 @@ export function buildPointLayer(
       },
     },
     visible,
-    getFillColor: DEFAULT_COLOR,
-    getRadius: 300,
+    opacity: style?.opacity ?? opacity,
+    getFillColor: style?.fillColor ?? DEFAULT_COLOR,
+    getLineColor: style?.strokeColor,
+    getRadius: style?.radius ?? 300,
+    lineWidthMinPixels: style?.strokeWidth ?? 1,
+    stroked: true,
     radiusMinPixels: 3,
     radiusMaxPixels: 15,
     pickable: true,
@@ -179,7 +220,9 @@ export function buildLineLayer(
   table: Table,
   visible: boolean,
   onClick?: FeatureClickHandler,
-  id: string = "lines"
+  id: string = "lines",
+  opacity: number = 1.0,
+  style?: LayerStyle
 ): Layer {
   const geomCol = table.getChild("geometry")!;
   const batch = geomCol.data[0];
@@ -199,10 +242,11 @@ export function buildLineLayer(
       },
     },
     visible,
-    getColor: DEFAULT_LINE_COLOR,
-    getWidth: 2,
+    opacity: style?.opacity ?? opacity,
+    getColor: style?.fillColor ?? DEFAULT_LINE_COLOR,
+    getWidth: style?.strokeWidth ?? 2,
     widthMinPixels: 1,
-    widthMaxPixels: 5,
+    widthMaxPixels: 10,
     pickable: true,
     onClick: makePickHandler(table, onClick, id),
   });
@@ -234,7 +278,9 @@ export function buildPolygonLayer(
   table: Table,
   visible: boolean,
   onClick?: FeatureClickHandler,
-  id: string = "polygons"
+  id: string = "polygons",
+  opacity: number = 1.0,
+  style?: LayerStyle
 ): Layer {
   const geomCol = table.getChild("geometry")!;
   const batch = geomCol.data[0];
@@ -272,7 +318,8 @@ export function buildPolygonLayer(
         },
       },
       visible,
-      getFillColor: DEFAULT_POLYGON_FILL,
+      opacity: style?.opacity ?? opacity,
+      getFillColor: style?.fillColor ?? DEFAULT_POLYGON_FILL,
       _normalize: true,
       pickable: true,
       onClick: makePickHandler(table, onClick, id),
@@ -318,7 +365,8 @@ export function buildPolygonLayer(
     data: polygons,
     getPolygon: (d: PolygonRings) => d as any,
     visible,
-    getFillColor: DEFAULT_POLYGON_FILL,
+    opacity: style?.opacity ?? opacity,
+    getFillColor: style?.fillColor ?? DEFAULT_POLYGON_FILL,
     _normalize: true,
     pickable: true,
     onClick: makePickHandler(table, onClick, id),
@@ -337,19 +385,21 @@ export function buildAutoLayer(
   table: Table,
   visible: boolean,
   onClick?: FeatureClickHandler,
-  id?: string
+  id?: string,
+  opacity: number = 1.0,
+  style?: LayerStyle
 ): Layer {
   const geomType = detectGeomType(table);
   switch (geomType) {
     case "point":
-      return buildPointLayer(table, visible, onClick, id);
+      return buildPointLayer(table, visible, onClick, id, opacity, style);
     case "line":
-      return buildLineLayer(table, visible, onClick, id);
+      return buildLineLayer(table, visible, onClick, id, opacity, style);
     case "polygon":
-      return buildPolygonLayer(table, visible, onClick, id);
+      return buildPolygonLayer(table, visible, onClick, id, opacity, style);
     default:
       // Fall back to polygon layer for unknown types
-      return buildPolygonLayer(table, visible, onClick, id);
+      return buildPolygonLayer(table, visible, onClick, id, opacity, style);
   }
 }
 
@@ -374,7 +424,8 @@ export function buildAggregateLayer(
   table: Table,
   visible: boolean,
   onClick?: FeatureClickHandler,
-  id: string = "aggregate"
+  id: string = "aggregate",
+  opacity: number = 1.0
 ): Layer {
   const n = table.numRows;
   const geomCol = table.getChild("geometry");
@@ -424,6 +475,7 @@ export function buildAggregateLayer(
     id,
     data: rows,
     visible,
+    opacity,
     getPosition: (d) => d.position,
     getRadius: (d) => {
       // Radius proportional to sqrt(count) for perceptual area scaling

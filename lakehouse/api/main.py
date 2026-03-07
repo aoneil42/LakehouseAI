@@ -352,6 +352,15 @@ def get_features(
     resolution: float | None = Query(
         default=None, gt=0, description="Grid cell size in degrees (for mode=aggregate)"
     ),
+    time_column: str | None = Query(
+        default=None, description="Temporal column name for time filtering"
+    ),
+    time_start: str | None = Query(
+        default=None, description="Start of time window (ISO 8601)"
+    ),
+    time_end: str | None = Query(
+        default=None, description="End of time window (ISO 8601)"
+    ),
 ) -> Response:
     if not _VALID_NS_PATH.match(namespace):
         return JSONResponse(
@@ -438,6 +447,17 @@ def get_features(
             f"ST_MakeEnvelope({minx}, {miny}, {maxx}, {maxy}))"
         )
 
+    # Time filter — validate column name against schema
+    if time_column and time_start and time_end:
+        if not _VALID_NAME.match(time_column):
+            return JSONResponse(
+                status_code=400, content={"error": "Invalid time column name"}
+            )
+        if time_column in col_map:
+            conditions.append(
+                f"{time_column} >= '{time_start}' AND {time_column} <= '{time_end}'"
+            )
+
     where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
     limit_clause = f" LIMIT {limit}" if limit else ""
 
@@ -512,6 +532,201 @@ def get_features(
         media_type="application/x-parquet",
         headers=headers or None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Schema endpoint — column metadata + temporal detection
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/schema/{namespace}/{layer}")
+def get_schema(namespace: str, layer: str) -> Response:
+    if not _VALID_NS_PATH.match(namespace):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid namespace name"}
+        )
+    if not _VALID_NAME.match(layer):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid layer name"}
+        )
+
+    try:
+        metadata_loc = _get_metadata_location(namespace, layer)
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Catalog lookup failed: {e}"},
+        )
+
+    source = f"iceberg_scan('{metadata_loc}')"
+    with _pool.acquire() as conn:  # type: ignore[union-attr]
+        cols_info = conn.execute(
+            f"SELECT column_name, column_type "
+            f"FROM (DESCRIBE SELECT * FROM {source} LIMIT 0)"
+        ).fetchall()
+
+    columns = [{"name": c[0], "type": c[1]} for c in cols_info]
+
+    # Detect temporal columns
+    temporal_types = {"TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "DATE",
+                      "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"}
+    temporal_columns = []
+    for cname, ctype in cols_info:
+        if cname == "geometry":
+            continue
+        ctype_upper = ctype.upper()
+        is_temporal = any(t in ctype_upper for t in temporal_types)
+        if is_temporal:
+            try:
+                with _pool.acquire() as conn:  # type: ignore[union-attr]
+                    row = conn.execute(
+                        f"SELECT MIN({cname})::VARCHAR, MAX({cname})::VARCHAR, "
+                        f"COUNT(DISTINCT {cname}) FROM {source}"
+                    ).fetchone()
+                if row and row[0] and row[1]:
+                    temporal_columns.append({
+                        "name": cname,
+                        "type": ctype,
+                        "min": row[0],
+                        "max": row[1],
+                        "distinct_count": row[2],
+                    })
+            except Exception:
+                pass
+
+    return JSONResponse(content={
+        "columns": columns,
+        "temporal_columns": temporal_columns,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Export endpoint — export selected features as GeoParquet
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/export/{namespace}/{layer}")
+def export_features(namespace: str, layer: str, body: dict) -> Response:
+    if not _VALID_NS_PATH.match(namespace):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid namespace name"}
+        )
+    if not _VALID_NAME.match(layer):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid layer name"}
+        )
+
+    row_indices = body.get("row_indices", [])
+    if not row_indices:
+        return JSONResponse(
+            status_code=400, content={"error": "No row indices provided"}
+        )
+
+    try:
+        metadata_loc = _get_metadata_location(namespace, layer)
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Catalog lookup failed: {e}"},
+        )
+
+    source = f"iceberg_scan('{metadata_loc}')"
+    # Use CTE with ROW_NUMBER to filter by row indices
+    indices_list = ", ".join(str(int(i)) for i in row_indices[:100_000])
+    sql = (
+        f"WITH numbered AS ("
+        f"  SELECT *, ROW_NUMBER() OVER () - 1 AS _rn FROM {source}"
+        f") SELECT * EXCLUDE (_rn) FROM numbered "
+        f"WHERE _rn IN ({indices_list})"
+    )
+
+    fd, tmppath = tempfile.mkstemp(suffix=".parquet")
+    os.close(fd)
+    try:
+        with _pool.acquire() as conn:  # type: ignore[union-attr]
+            conn.execute(f"COPY ({sql}) TO '{tmppath}' (FORMAT PARQUET)")
+        with open(tmppath, "rb") as f:
+            data = f.read()
+    finally:
+        os.unlink(tmppath)
+
+    return Response(
+        content=data,
+        media_type="application/x-parquet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{namespace}_{layer}_export.parquet"'
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stats endpoint — column statistics for data-driven symbology
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/stats/{namespace}/{layer}/{column}")
+def get_column_stats(namespace: str, layer: str, column: str) -> Response:
+    if not _VALID_NS_PATH.match(namespace):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid namespace name"}
+        )
+    if not _VALID_NAME.match(layer):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid layer name"}
+        )
+    if not _VALID_NAME.match(column):
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid column name"}
+        )
+
+    try:
+        metadata_loc = _get_metadata_location(namespace, layer)
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Catalog lookup failed: {e}"},
+        )
+
+    source = f"iceberg_scan('{metadata_loc}')"
+    try:
+        with _pool.acquire() as conn:  # type: ignore[union-attr]
+            row = conn.execute(
+                f"SELECT "
+                f"  MIN({column}), MAX({column}), "
+                f"  AVG({column}::DOUBLE), STDDEV({column}::DOUBLE), "
+                f"  PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY {column}::DOUBLE), "
+                f"  PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY {column}::DOUBLE), "
+                f"  PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY {column}::DOUBLE), "
+                f"  COUNT(DISTINCT {column}) "
+                f"FROM {source}"
+            ).fetchone()
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Stats query failed: {e}"},
+        )
+
+    if not row:
+        return JSONResponse(
+            status_code=404, content={"error": "No data found"}
+        )
+
+    def _safe(v):
+        if v is None:
+            return None
+        return float(v) if isinstance(v, (int, float)) else str(v)
+
+    return JSONResponse(content={
+        "column": column,
+        "min": _safe(row[0]),
+        "max": _safe(row[1]),
+        "mean": _safe(row[2]),
+        "stddev": _safe(row[3]),
+        "q25": _safe(row[4]),
+        "median": _safe(row[5]),
+        "q75": _safe(row[6]),
+        "distinct_count": row[7],
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +815,21 @@ _UPLOAD_FORM_HTML = """\
   .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
   .check-row input { cursor: pointer; }
   .check-row label { margin: 0; font-weight: 400; cursor: pointer; }
+  .combo-wrap { position: relative; margin-bottom: 16px; }
+  .combo-wrap input[type="text"] { margin-bottom: 0; padding-right: 28px; }
+  .combo-btn { position: absolute; right: 1px; top: 1px; bottom: 1px; width: 28px;
+    background: transparent; border: none; cursor: pointer; font-size: 12px; color: #888;
+    display: flex; align-items: center; justify-content: center; border-radius: 0 6px 6px 0; }
+  .combo-btn:hover { background: #f0f0f0; color: #333; }
+  .combo-list { position: absolute; top: 100%; left: 0; right: 0; max-height: 180px;
+    overflow-y: auto; background: #fff; border: 1px solid #ccc; border-top: none;
+    border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 10; display: none; }
+  .combo-list.show { display: block; }
+  .combo-item { padding: 7px 10px; font-size: 13px; cursor: pointer; }
+  .combo-item:hover, .combo-item.active { background: #e8f0fe; }
+  .combo-item.new-entry { color: #1e90ff; font-style: italic; }
+  .combo-empty { padding: 7px 10px; font-size: 12px; color: #999; font-style: italic; }
   button { width: 100%; padding: 10px; background: #1e90ff; color: #fff; border: none;
     border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer;
     transition: background 0.2s; }
@@ -635,10 +865,18 @@ _UPLOAD_FORM_HTML = """\
     <p class="subtitle">Ingest GeoJSON or GeoParquet into the Iceberg catalog</p>
 
     <label for="namespace">Namespace</label>
-    <input type="text" id="namespace" placeholder="e.g. colorado" required />
+    <div class="combo-wrap" id="ns-combo">
+      <input type="text" id="namespace" placeholder="Select or type a namespace..." autocomplete="off" required />
+      <button type="button" class="combo-btn" tabindex="-1">&#9662;</button>
+      <div class="combo-list" id="ns-list"></div>
+    </div>
 
     <label for="table_name">Table name</label>
-    <input type="text" id="table_name" placeholder="e.g. buildings" required />
+    <div class="combo-wrap" id="tbl-combo">
+      <input type="text" id="table_name" placeholder="Select or type a table name..." autocomplete="off" required />
+      <button type="button" class="combo-btn" tabindex="-1">&#9662;</button>
+      <div class="combo-list" id="tbl-list"></div>
+    </div>
 
     <div class="file-area" id="drop-zone">
       <input type="file" id="files" multiple accept=".geojson,.json,.parquet,.geoparquet" />
@@ -685,6 +923,109 @@ const fileLabel = document.getElementById("file-label");
 // State
 let previewId = null;
 let previewTypes = {};
+let previewNullCounts = {};
+let knownNamespaces = [];
+let knownTables = [];
+
+// ── Combo-box helpers ──────────────────────────────────────
+function setupCombo(inputId, listId, wrapId, getItems, onSelect) {
+  const input = document.getElementById(inputId);
+  const list = document.getElementById(listId);
+  const wrap = document.getElementById(wrapId);
+  const btn = wrap.querySelector(".combo-btn");
+
+  function render(items, filter) {
+    list.innerHTML = "";
+    const q = (filter || "").toLowerCase();
+    const filtered = q ? items.filter(x => x.toLowerCase().includes(q)) : items;
+    if (filtered.length === 0 && !q) {
+      list.innerHTML = '<div class="combo-empty">No existing entries</div>';
+    } else {
+      filtered.forEach(item => {
+        const div = document.createElement("div");
+        div.className = "combo-item";
+        div.textContent = item;
+        div.addEventListener("mousedown", e => { e.preventDefault(); input.value = item; close(); onSelect && onSelect(item); });
+        list.appendChild(div);
+      });
+      if (q && !items.some(x => x.toLowerCase() === q)) {
+        const div = document.createElement("div");
+        div.className = "combo-item new-entry";
+        div.textContent = '+ Create "' + input.value.trim() + '"';
+        div.addEventListener("mousedown", e => { e.preventDefault(); close(); onSelect && onSelect(input.value.trim()); });
+        list.appendChild(div);
+      }
+    }
+  }
+
+  function open() { render(getItems(), input.value.trim()); list.classList.add("show"); }
+  function close() { list.classList.remove("show"); }
+
+  btn.addEventListener("click", () => { if (list.classList.contains("show")) close(); else { input.focus(); open(); } });
+  input.addEventListener("focus", open);
+  input.addEventListener("input", () => render(getItems(), input.value.trim()));
+  input.addEventListener("blur", () => setTimeout(close, 150));
+  input.addEventListener("keydown", e => {
+    if (e.key === "Escape") close();
+    if (e.key === "Enter") { close(); onSelect && onSelect(input.value.trim()); }
+  });
+}
+
+async function loadNamespaces() {
+  try {
+    const resp = await fetch("/api/namespaces");
+    if (resp.ok) knownNamespaces = await resp.json();
+  } catch (e) { console.warn("Could not load namespaces", e); }
+}
+
+async function loadTablesFor(ns) {
+  knownTables = [];
+  if (!ns) return;
+  try {
+    const resp = await fetch("/api/tables/" + encodeURIComponent(ns));
+    if (resp.ok) knownTables = await resp.json();
+  } catch (e) { console.warn("Could not load tables for " + ns, e); }
+  // Re-render table dropdown if open
+  const list = document.getElementById("tbl-list");
+  if (list.classList.contains("show")) {
+    const input = document.getElementById("table_name");
+    const q = input.value.trim().toLowerCase();
+    list.innerHTML = "";
+    const filtered = q ? knownTables.filter(x => x.toLowerCase().includes(q)) : knownTables;
+    if (filtered.length === 0 && !q) {
+      list.innerHTML = '<div class="combo-empty">No existing tables in this namespace</div>';
+    } else {
+      filtered.forEach(item => {
+        const div = document.createElement("div");
+        div.className = "combo-item";
+        div.textContent = item;
+        div.addEventListener("mousedown", e => { e.preventDefault(); input.value = item; list.classList.remove("show"); });
+        list.appendChild(div);
+      });
+    }
+  }
+}
+
+// Init combos
+setupCombo("namespace", "ns-list", "ns-combo", () => knownNamespaces, ns => {
+  if (ns) loadTablesFor(ns);
+});
+setupCombo("table_name", "tbl-list", "tbl-combo", () => knownTables, tbl => {
+  // Auto-check append if user picked an existing table
+  if (knownTables.includes(tbl)) {
+    document.getElementById("append").checked = true;
+  }
+});
+
+// Also load tables when namespace changes by typing
+document.getElementById("namespace").addEventListener("change", () => {
+  loadTablesFor(document.getElementById("namespace").value.trim());
+});
+
+// Load namespaces on page load
+loadNamespaces();
+
+// ── End combo-box ──────────────────────────────────────────
 
 dropZone.addEventListener("click", () => fileInput.click());
 dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("dragover"); });
@@ -733,7 +1074,8 @@ document.getElementById("preview-btn").addEventListener("click", async () => {
 
     previewId = data.preview_id;
     previewTypes = data.duckdb_types;
-    buildSchemaTable(data.columns, data.duckdb_types, data.sample, data.editable_types);
+    previewNullCounts = data.null_counts || {};
+    buildSchemaTable(data.columns, data.duckdb_types, data.sample, data.editable_types, previewNullCounts);
     document.getElementById("preview-subtitle").textContent =
       `${data.num_rows.toLocaleString()} rows in ${ns}.${tn}`;
 
@@ -749,7 +1091,7 @@ document.getElementById("preview-btn").addEventListener("click", async () => {
   }
 });
 
-function buildSchemaTable(columns, types, sample, editableTypes) {
+function buildSchemaTable(columns, types, sample, editableTypes, nullCounts) {
   const tbody = document.getElementById("schema-tbody");
   tbody.innerHTML = "";
 
@@ -760,6 +1102,14 @@ function buildSchemaTable(columns, types, sample, editableTypes) {
     const tdName = document.createElement("td");
     tdName.textContent = col;
     tdName.style.fontWeight = "600";
+    // Show null count warning badge
+    if (nullCounts[col]) {
+      const badge = document.createElement("span");
+      badge.style.cssText = "display:inline-block;margin-left:6px;font-size:10px;background:#ffcc80;color:#e65100;padding:1px 5px;border-radius:3px;font-weight:400;";
+      badge.textContent = `${nullCounts[col]} nulls`;
+      badge.title = `${nullCounts[col]} NULL values detected in this column`;
+      tdName.appendChild(badge);
+    }
     tr.appendChild(tdName);
 
     // Inferred type
@@ -805,15 +1155,8 @@ function buildSchemaTable(columns, types, sample, editableTypes) {
   });
 }
 
-// Phase 2: Commit
-document.getElementById("commit-btn").addEventListener("click", async () => {
-  const ns = document.getElementById("namespace").value.trim();
-  const tn = document.getElementById("table_name").value.trim();
-  const ap = document.getElementById("append").checked;
-  const res = document.getElementById("commit-result");
-  const btn = document.getElementById("commit-btn");
-
-  // Collect type overrides
+// Phase 2: Commit (with validation step)
+function getOverrides() {
   const overrides = {};
   document.querySelectorAll(".type-select").forEach(sel => {
     const col = sel.dataset.col;
@@ -821,22 +1164,80 @@ document.getElementById("commit-btn").addEventListener("click", async () => {
       overrides[col] = sel.value;
     }
   });
+  return overrides;
+}
 
-  btn.disabled = true; btn.textContent = "Committing...";
-  res.className = ""; res.textContent = "";
+async function doCommit(ns, tn, ap, overrides, validateOnly) {
+  return fetch("/api/upload/commit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      preview_id: previewId,
+      namespace: ns,
+      table_name: tn,
+      append: ap,
+      type_overrides: overrides,
+      validate_only: validateOnly,
+    }),
+  });
+}
+
+document.getElementById("commit-btn").addEventListener("click", async () => {
+  const ns = document.getElementById("namespace").value.trim();
+  const tn = document.getElementById("table_name").value.trim();
+  const ap = document.getElementById("append").checked;
+  const res = document.getElementById("commit-result");
+  const btn = document.getElementById("commit-btn");
+  const overrides = getOverrides();
+  const alreadyConfirmed = btn.dataset.confirmed === "pending";
+
+  btn.disabled = true;
+  // Remove any previous warning divs
+  document.querySelectorAll("#phase2 .result.warn").forEach(el => el.remove());
 
   try {
-    const resp = await fetch("/api/upload/commit", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        preview_id: previewId,
-        namespace: ns,
-        table_name: tn,
-        append: ap,
-        type_overrides: overrides,
-      }),
-    });
+    // Step 1: Validate (dry-run) — skip if user already confirmed warnings
+    if (!alreadyConfirmed && (Object.keys(overrides).length > 0 || (previewNullCounts && Object.keys(previewNullCounts).length > 0))) {
+      btn.textContent = "Validating...";
+      res.className = ""; res.textContent = "";
+      const valResp = await doCommit(ns, tn, ap, overrides, true);
+      const valData = await valResp.json();
+
+      if (!valResp.ok) {
+        res.className = "result err";
+        res.textContent = valData.error || JSON.stringify(valData);
+        return;
+      }
+
+      // Combine existing nulls and cast-induced nulls
+      const allWarnings = [];
+      if (previewNullCounts) {
+        for (const [col, n] of Object.entries(previewNullCounts)) {
+          if (!overrides[col]) {
+            allWarnings.push(`Column "${col}": ${n} existing NULL values`);
+          }
+        }
+      }
+      if (valData.null_warnings && Object.keys(valData.null_warnings).length > 0) {
+        for (const [col, n] of Object.entries(valData.null_warnings)) {
+          allWarnings.push(`Column "${col}": ${n} values could not be converted to ${overrides[col]} (will be NULL)`);
+        }
+      }
+
+      if (allWarnings.length > 0) {
+        res.className = "result warn";
+        res.textContent = "Data quality warnings:\\n" + allWarnings.join("\\n");
+        btn.disabled = false;
+        btn.textContent = "Confirm & Commit";
+        btn.dataset.confirmed = "pending";
+        return;
+      }
+    }
+
+    // Step 2: Actual commit (either no warnings or user confirmed)
+    delete btn.dataset.confirmed;
+    btn.textContent = "Committing...";
+    const resp = await doCommit(ns, tn, ap, overrides, false);
     const data = await resp.json();
     if (resp.ok) {
       let msg = `${data.created ? "Created" : "Appended to"} ${ns}.${tn}\\n`
@@ -848,7 +1249,7 @@ document.getElementById("commit-btn").addEventListener("click", async () => {
       }
       res.className = "result ok";
       res.textContent = msg;
-      if (data.null_warnings) {
+      if (data.null_warnings && Object.keys(data.null_warnings).length > 0) {
         const warns = Object.entries(data.null_warnings)
           .map(([col, n]) => `${n} values in "${col}" could not be converted (set to NULL)`)
           .join("\\n");
@@ -862,7 +1263,6 @@ document.getElementById("commit-btn").addEventListener("click", async () => {
       res.className = "result err";
       res.textContent = data.error || JSON.stringify(data);
       if (resp.status === 410) {
-        // Preview expired — go back to phase 1
         setTimeout(() => {
           document.getElementById("phase1").style.display = "block";
           document.getElementById("phase2").style.display = "none";
@@ -872,8 +1272,12 @@ document.getElementById("commit-btn").addEventListener("click", async () => {
   } catch (e) {
     res.className = "result err";
     res.textContent = "Request failed: " + e.message;
+    delete btn.dataset.confirmed;
   } finally {
-    btn.disabled = false; btn.textContent = "Commit Upload";
+    btn.disabled = false;
+    if (btn.dataset.confirmed !== "pending") {
+      btn.textContent = "Commit Upload";
+    }
   }
 });
 
@@ -1088,6 +1492,15 @@ async def upload_preview(
 
     columns = [f.name for f in combined.schema]
 
+    # Count existing nulls per non-geometry column
+    null_counts: dict[str, int] = {}
+    for col_name in columns:
+        if col_name == "geometry":
+            continue
+        nc = combined.column(col_name).null_count
+        if nc > 0:
+            null_counts[col_name] = nc
+
     with _preview_lock:
         _preview_cache[preview_id] = {
             "path": cache_path,
@@ -1108,6 +1521,7 @@ async def upload_preview(
         "sample": sample,
         "num_rows": combined.num_rows,
         "editable_types": list(ALLOWED_TYPES),
+        "null_counts": null_counts,
     }
 
 
@@ -1120,6 +1534,43 @@ class CommitRequest(BaseModel):
     table_name: str
     append: bool = False
     type_overrides: dict[str, str] = {}
+    validate_only: bool = False
+
+
+_NUMERIC_TARGETS = {"INTEGER", "BIGINT", "DOUBLE", "FLOAT"}
+
+
+def _build_cast_expr(col: str, source: str, target: str) -> str:
+    """Build a smart DuckDB CAST expression handling common edge cases.
+
+    - BIGINT/INTEGER → TIMESTAMP: use epoch_ms() (values are epoch milliseconds)
+    - VARCHAR → numeric: NULLIF empty strings before casting
+    - General: use TRY_CAST for safety
+    """
+    q = f'"{col}"'  # quoted column name
+
+    # BIGINT/INTEGER → TIMESTAMP: interpret as epoch milliseconds
+    if source in ("BIGINT", "INTEGER") and target == "TIMESTAMP":
+        return f'epoch_ms({q}) AS {q}'
+
+    # VARCHAR → numeric: strip empty strings first so they become NULL
+    if source == "VARCHAR" and target in _NUMERIC_TARGETS:
+        return f'TRY_CAST(NULLIF(TRIM({q}), \'\') AS {target}) AS {q}'
+
+    # VARCHAR → TIMESTAMP: try common formats
+    if source == "VARCHAR" and target == "TIMESTAMP":
+        return f'TRY_CAST(NULLIF(TRIM({q}), \'\') AS TIMESTAMP) AS {q}'
+
+    # VARCHAR → DATE
+    if source == "VARCHAR" and target == "DATE":
+        return f'TRY_CAST(NULLIF(TRIM({q}), \'\') AS DATE) AS {q}'
+
+    # VARCHAR → BOOLEAN
+    if source == "VARCHAR" and target == "BOOLEAN":
+        return f'TRY_CAST(NULLIF(TRIM({q}), \'\') AS BOOLEAN) AS {q}'
+
+    # Default: TRY_CAST
+    return f'TRY_CAST({q} AS {target}) AS {q}'
 
 
 @app.post("/api/upload/commit")
@@ -1159,12 +1610,16 @@ def upload_commit(req: CommitRequest):
             conn.execute(f"CREATE TEMP TABLE __preview AS SELECT * FROM read_parquet('{cache_path}')")
 
             select_parts = []
+            source_types = entry.get("duckdb_types", {})
             for col in entry["columns"]:
                 if col == "geometry":
                     select_parts.append('"geometry"')
                 elif col in req.type_overrides:
                     target = req.type_overrides[col].upper()
-                    select_parts.append(f'TRY_CAST("{col}" AS {target}) AS "{col}"')
+                    source = source_types.get(col, "").upper()
+                    select_parts.append(
+                        _build_cast_expr(col, source, target)
+                    )
                 else:
                     select_parts.append(f'"{col}"')
 
@@ -1176,12 +1631,6 @@ def upload_commit(req: CommitRequest):
         import pyarrow.parquet as pq
         combined = pq.read_table(cache_path)
 
-    # Clean up cache entry
-    with _preview_lock:
-        removed = _preview_cache.pop(req.preview_id, None)
-    if removed and os.path.exists(removed["path"]):
-        os.unlink(removed["path"])
-
     # Check for null warnings from TRY_CAST
     null_warnings: dict[str, int] = {}
     if req.type_overrides:
@@ -1189,6 +1638,20 @@ def upload_commit(req: CommitRequest):
             null_count = combined.column(col).null_count
             if null_count > 0:
                 null_warnings[col] = null_count
+
+    # Validate-only mode: return warnings without writing
+    if req.validate_only:
+        return {
+            "validated": True,
+            "null_warnings": null_warnings,
+            "num_rows": combined.num_rows,
+        }
+
+    # Clean up cache entry
+    with _preview_lock:
+        removed = _preview_cache.pop(req.preview_id, None)
+    if removed and os.path.exists(removed["path"]):
+        os.unlink(removed["path"])
 
     result = _write_to_iceberg(
         combined, req.namespace, req.table_name, req.append, entry.get("num_files", 1)

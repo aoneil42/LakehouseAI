@@ -134,12 +134,17 @@ function attachOverlay() {
 // Map init + basemap switching
 // ---------------------------------------------------------------------------
 
-export function initMap(style: string): maplibregl.Map {
+export function initMap(
+  style: string,
+  center?: [number, number],
+  zoom?: number
+): maplibregl.Map {
   map = new maplibregl.Map({
     container: "map",
     style,
-    center: INITIAL_CENTER,
-    zoom: INITIAL_ZOOM,
+    center: center ?? INITIAL_CENTER,
+    zoom: zoom ?? INITIAL_ZOOM,
+    ...({ preserveDrawingBuffer: true } as any), // required for screenshot capture
     transformRequest: (url: string) => {
       // Append token for basemaps that require authentication
       const current = basemaps[currentBasemapIndex];
@@ -159,6 +164,16 @@ export function initMap(style: string): maplibregl.Map {
   });
 
   map.addControl(new maplibregl.NavigationControl(), "top-right");
+  map.addControl(
+    new maplibregl.ScaleControl({ maxWidth: 150, unit: "metric" }),
+    "bottom-right"
+  );
+
+  // Coordinate display — updates on mouse move
+  map.on("mousemove", (e) => {
+    const el = document.getElementById("coord-display");
+    if (el) el.textContent = `${e.lngLat.lat.toFixed(6)}, ${e.lngLat.lng.toFixed(6)}`;
+  });
 
   // Use "style.load" which fires as soon as the style JSON is parsed and
   // the GL context is ready — does NOT wait for all tile sources to finish.
@@ -246,6 +261,11 @@ export function getViewportBbox(): Bbox {
     bounds.getEast(),
     bounds.getNorth(),
   ];
+}
+
+/** Reset the map view to the initial center and zoom. */
+export function resetView(): void {
+  map.flyTo({ center: INITIAL_CENTER, zoom: INITIAL_ZOOM });
 }
 
 export function getMap(): maplibregl.Map {

@@ -42,8 +42,8 @@ A containerized geospatial data lakehouse with three API interfaces (Esri GeoSer
 
   ┌────────────────────────────────────────────────┐
   │              Webmap (deck.gl v9)               │
-  │  DuckDB-WASM + MapLibre v5 + OpenFreeMap      │
-  │  namespace selector, layer toggles, zoom-to   │
+  │  MapLibre v5 + GeoArrow + full GIS toolset    │
+  │  identify, measure, symbology, time slider    │
   └────────────────────────────────────────────────┘
 ```
 
@@ -59,6 +59,26 @@ The webmap uses a **zero-copy GeoArrow pipeline** — no GeoJSON conversion in t
    - `GeoArrowSolidPolygonLayer` — polygons
 
 Data stays in Arrow columnar format from network fetch through to GPU upload, avoiding the serialization overhead of GeoJSON.
+
+### Webmap Features
+
+The webmap is a full-featured GIS viewer with interactive tools:
+
+| Feature | Description |
+|---------|-------------|
+| **Catalog browser** | Hierarchical namespace/table tree with search, layer toggles, and zoom-to-extent |
+| **Active layers** | Drag-to-reorder layer list with per-layer opacity, visibility, symbology, and attribute table access |
+| **Identify / box select** | Click features for popup details, or drag a box to select multiple features |
+| **Attribute table** | Spreadsheet-style data table with column sorting, timestamp formatting, and feature count |
+| **Symbology** | Customize fill color, stroke color, stroke width, point radius, and opacity per layer |
+| **Measure** | Interactive distance (polyline) and area (polygon) measurement tools |
+| **Time slider** | Filter temporal datasets with play/pause/step controls, adjustable window size (hourly → yearly), and playback speed. All timestamps treated as UTC |
+| **Screenshot** | Export the current map view as a PNG image |
+| **Data export** | Export layer data as GeoJSON or CSV |
+| **Search** | Geocode addresses via Nominatim, or jump to coordinates (lat/lon or lon/lat) |
+| **Basemap picker** | Switch between configured basemap styles |
+| **URL state** | Shareable permalinks preserving zoom, center, and active layers |
+| **Reset map** | One-click removal of all layers and return to initial view |
 
 ### Services
 
@@ -143,7 +163,7 @@ EOF
 
 ### Web UI
 
-Navigate to **http://localhost/api/upload** for a drag-and-drop upload form. Accepts GeoJSON and GeoParquet files.
+Navigate to **http://localhost/api/upload** for a drag-and-drop upload form. Accepts GeoJSON and GeoParquet files. The form includes combobox dropdowns for existing namespaces and tables to prevent typos and simplify appending to existing datasets. Upload includes a two-phase flow: preview with validation, then confirm to commit.
 
 ### API
 
@@ -187,8 +207,10 @@ sedona.sql("""
 | GET | `/api/features/{namespace}/{layer}` | Query features (GeoJSON) |
 | GET | `/api/bbox/{namespace}` | Bounding box for a namespace |
 | GET | `/api/bbox/{namespace}/{table}` | Bounding box for a table |
-| GET | `/api/upload` | Upload form (HTML) |
-| POST | `/api/upload` | Upload GeoJSON/GeoParquet files |
+| GET | `/api/schema/{namespace}/{table}` | Table schema with temporal column metadata |
+| GET | `/api/geoparquet/{namespace}/{layer}` | Features as GeoParquet (bbox/limit/simplify/time filter) |
+| GET | `/api/upload` | Upload form (combobox namespace/table selection) |
+| POST | `/api/upload` | Upload GeoJSON/GeoParquet (two-phase: preview → confirm) |
 | GET | `/api/docs` | Swagger UI |
 | GET | `/api/health` | Health check |
 | WS | `/ws/agent/{session_id}` | WebSocket for agent layer_ready push events |
@@ -338,9 +360,16 @@ lakehouse/
 │   ├── src/
 │   │   ├── main.ts              # App entry, dataset loading, agent integration
 │   │   ├── map.ts               # MapLibre + deck.gl setup
-│   │   ├── layers.ts            # deck.gl layer definitions
+│   │   ├── layers.ts            # deck.gl layer definitions (GeoArrow)
 │   │   ├── queries.ts           # API queries (GeoParquet fetch)
-│   │   ├── ui.ts                # Namespace tree, layer toggles
+│   │   ├── ui.ts                # Catalog tree, layer toggles, active layers
+│   │   ├── attribute-table.ts   # Spreadsheet-style attribute table
+│   │   ├── symbology.ts         # Layer symbology panel (fill, stroke, opacity)
+│   │   ├── measure.ts           # Distance and area measurement tool
+│   │   ├── time-slider.ts       # Temporal data filtering (play/pause/step)
+│   │   ├── screenshot.ts        # Map screenshot export
+│   │   ├── export.ts            # GeoJSON/CSV data export
+│   │   ├── url-state.ts         # Permalink state (zoom, center, layers)
 │   │   ├── agent-ws.ts          # WebSocket client for agent events
 │   │   └── chat-panel.ts        # Chat panel UI component
 │   └── public/data/             # Static Parquet files (git-ignored)

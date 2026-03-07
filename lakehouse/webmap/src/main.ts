@@ -10,6 +10,7 @@ import {
   switchBasemap,
   pickObjectsInRect,
   flyToBounds,
+  resetView,
   getViewportBbox,
   onMoveEnd,
 } from "./map";
@@ -19,15 +20,24 @@ import {
   fetchNamespaceTree,
   fetchTables,
   fetchTableBbox,
+  fetchSchema,
   expandBbox,
   MAX_FEATURES_POINT,
   MAX_FEATURES_LINE,
   MAX_FEATURES_POLYGON,
 } from "./queries";
-import type { Bbox } from "./queries";
-import { buildAutoLayer, buildAggregateLayer, detectGeomType, getFeatureProps } from "./layers";
+import type { Bbox, TimeFilter } from "./queries";
+import { buildAutoLayer, detectGeomType, getFeatureProps } from "./layers";
 import type { FeatureClickHandler, GeomType } from "./layers";
 import type { Table, Vector } from "apache-arrow";
+import { readUrlState, writeUrlState } from "./url-state";
+import { AttributeTable } from "./attribute-table";
+import { MeasureTool } from "./measure";
+import { captureMap } from "./screenshot";
+import { SymbologyPanel, getDefaultStyle } from "./symbology";
+import type { LayerStyle } from "./symbology";
+import { TimeSlider } from "./time-slider";
+import type { TimeConfig } from "./time-slider";
 import {
   initCatalogBrowser,
   buildCatalogTree,
@@ -44,8 +54,16 @@ import {
   addIdentifyResult,
   clearIdentifyResults,
   deactivateIdentifyButton,
+  showSearchResults,
+  hideSearchResults,
+  deactivateMeasureButtons,
+  initActiveLayers,
+  renderActiveLayers,
+  initCatalogModal,
+  openCatalogModal,
   debugLog,
 } from "./ui";
+import type { SearchResult, ActiveLayerInfo } from "./ui";
 
 // ---------------------------------------------------------------------------
 // State
@@ -66,20 +84,20 @@ const loadingKeys = new Set<string>();
 const earcutCooldownKeys = new Set<string>();
 /** Zoom level at which each layer was last loaded */
 const loadedZoom = new Map<string, number>();
-/** Layer keys currently displayed in aggregate (grid-binned) mode */
-const aggregatedKeys = new Set<string>();
-
-/** Below this zoom level, request server-side grid aggregation */
-const AGGREGATE_ZOOM_THRESHOLD = 11;
-
-/** Map zoom level to grid cell size in degrees */
-function getAggregateResolution(zoom: number): number {
-  if (zoom <= 3) return 5.0;
-  if (zoom <= 5) return 2.0;
-  if (zoom <= 7) return 0.5;
-  if (zoom <= 9) return 0.1;
-  return 0.05; // zoom 10
-}
+/** Per-layer style (fill, stroke, opacity, radius) */
+const layerStyles = new Map<string, LayerStyle>();
+/** Active attribute table instance */
+let activeAttrTable: AttributeTable | null = null;
+/** Active symbology panel instance */
+let activeSymPanel: SymbologyPanel | null = null;
+/** Measure tool instance — created after map init */
+let measureTool: MeasureTool | null = null;
+/** Active time sliders per layer key */
+const activeTimeSliders = new Map<string, TimeSlider>();
+/** Active time filters per layer key */
+const timeFilters = new Map<string, TimeFilter>();
+/** User-defined layer order (keys in draw order, bottom-first) */
+let userLayerOrder: string[] | null = null;
 
 let identifyActive = false;
 let lastMouseX = 0;
@@ -102,11 +120,21 @@ function rebuildLayers() {
   // This avoids stale WebGL framebuffer artifacts from GeoArrow polygon
   // layers when they're removed from the array in non-interleaved mode.
   const allKeys = [...tables.keys()];
-  allKeys.sort((a, b) => {
-    const ga = geomTypes.get(a) ?? "unknown";
-    const gb = geomTypes.get(b) ?? "unknown";
-    return GEOM_ORDER[ga] - GEOM_ORDER[gb];
-  });
+  if (userLayerOrder && userLayerOrder.length > 0) {
+    // Use user-defined order, then add any new layers at the end
+    const orderMap = new Map(userLayerOrder.map((k, i) => [k, i]));
+    allKeys.sort((a, b) => {
+      const oa = orderMap.get(a) ?? 999;
+      const ob = orderMap.get(b) ?? 999;
+      return oa - ob;
+    });
+  } else {
+    allKeys.sort((a, b) => {
+      const ga = geomTypes.get(a) ?? "unknown";
+      const gb = geomTypes.get(b) ?? "unknown";
+      return GEOM_ORDER[ga] - GEOM_ORDER[gb];
+    });
+  }
 
   const visibleCount = [...visibleSet].filter((k) => tables.has(k)).length;
   debugLog(`rebuildLayers: ${visibleCount} visible of ${allKeys.length} loaded: ${allKeys.filter((k) => visibleSet.has(k)).map((k) => `${k}(${geomTypes.get(k)})`).join(", ")}`);
@@ -116,15 +144,11 @@ function rebuildLayers() {
     try {
       const t = tables.get(key)!;
       const vis = visibleSet.has(key);
-      let l;
-      if (aggregatedKeys.has(key)) {
-        l = buildAggregateLayer(t, vis, handleClick, key);
-        if (vis) debugLog(`  → ${key}: aggregate bubble layer (${t.numRows} cells)`);
-      } else {
-        if (vis) debugLog(`  building ${key}: ${t.numRows} rows, ${t.batches.length} batches`);
-        l = buildAutoLayer(t, vis, handleClick, key);
-        if (vis) debugLog(`  → ${key}: ${l.constructor.name} created OK`);
-      }
+      const style = layerStyles.get(key);
+      const opacity = style?.opacity ?? 1.0;
+      if (vis) debugLog(`  building ${key}: ${t.numRows} rows, ${t.batches.length} batches`);
+      const l = buildAutoLayer(t, vis, handleClick, key, opacity, style);
+      if (vis) debugLog(`  → ${key}: ${l.constructor.name} created OK`);
       layers.push(l);
     } catch (e) {
       debugLog(`  → ${key}: FAILED: ${(e as Error).message}`, "err");
@@ -142,6 +166,9 @@ function rebuildLayers() {
       debugCheckDeckLayers(key);
     }
   }
+
+  // Update the active layers legend
+  updateActiveLayers();
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +191,8 @@ function updateStatusBar() {
     if (!table) continue;
     const n = table.numRows;
     total += n;
-    const isAgg = aggregatedKeys.has(key);
     const gt = geomTypes.get(key) ?? "unknown";
-    const suffix = isAgg ? "clusters" : GEOM_ABBREV[gt];
+    const suffix = GEOM_ABBREV[gt];
     parts.push(`${key}: ${n.toLocaleString()} ${suffix}`);
   }
 
@@ -178,6 +204,27 @@ function updateStatusBar() {
   setStatus(
     `${total.toLocaleString()} features \u2014 ${parts.join(" \u00b7 ")}`
   );
+}
+
+function updateActiveLayers() {
+  const layers: ActiveLayerInfo[] = [];
+  for (const key of tables.keys()) {
+    const table = tables.get(key)!;
+    const gt = (geomTypes.get(key) ?? "unknown") as GeomType;
+    const style = layerStyles.get(key);
+    const defaultFill = getDefaultStyle(gt).fillColor;
+    const fc = style?.fillColor ?? defaultFill;
+    const color = `rgb(${fc[0]},${fc[1]},${fc[2]})`;
+    const name = key.includes("/") ? key.split("/").pop()! : key;
+    layers.push({
+      key,
+      name,
+      count: table.numRows,
+      color,
+      visible: visibleSet.has(key),
+    });
+  }
+  renderActiveLayers(layers);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,9 +276,7 @@ function getEarcutCooldown(numRows: number): number {
   return 20_000;
 }
 
-/** Load (or reload) a layer using the current viewport bbox.
- *  At low zoom levels, requests server-side grid aggregation instead of
- *  individual features to avoid WASM OOM on massive datasets. */
+/** Load (or reload) a layer using the current viewport bbox. */
 async function loadLayerWithViewport(
   ns: string,
   layer: string
@@ -247,78 +292,53 @@ async function loadLayerWithViewport(
   const fetchBbox = expandBbox(viewportBbox, 1.5);
   const knownType = geomTypes.get(key);
   const zoom = getMap().getZoom();
-  // Only aggregate point layers — polygons and lines need their actual
-  // geometry for rendering.  Polygons use simplification + feature limits
-  // instead, which keeps them renderable at any zoom.
-  // On first load (knownType undefined), always fetch non-aggregated with a
-  // conservative limit so we can detect the geometry type from the response.
-  const useAggregate =
-    zoom < AGGREGATE_ZOOM_THRESHOLD &&
-    knownType === "point";
+
+  const tf = timeFilters.get(key);
 
   setTreeLayerLoading(ns, layer, true);
   try {
-    if (useAggregate) {
-      // --- Aggregated mode: server returns grid-binned centroids + counts ---
-      const resolution = getAggregateResolution(zoom);
-      const table = await loadLayer(
-        ns, layer, fetchBbox, 50_000, undefined,
-        { resolution }
-      );
-      tables.set(key, table);
-      aggregatedKeys.add(key);
-      loadedBbox.set(key, fetchBbox);
-      loadedZoom.set(key, zoom);
-      updateTreeLayerCount(ns, layer, table.numRows);
-      debugLog(
-        `loaded ${key} AGGREGATED: ${table.numRows} cells, resolution=${resolution}`
-      );
-    } else {
-      // --- Full-resolution mode ---
-      aggregatedKeys.delete(key);
-      const limit = getEffectiveLimit(knownType, zoom);
-      const simplify = knownType === "polygon" ? getSimplifyTolerance(zoom) : undefined;
+    const limit = getEffectiveLimit(knownType, zoom);
+    const simplify = knownType === "polygon" ? getSimplifyTolerance(zoom) : undefined;
 
-      const table = await loadLayer(ns, layer, fetchBbox, limit, simplify);
-      const gt = detectGeomType(table);
-      tables.set(key, table);
-      geomTypes.set(key, gt);
-      loadedBbox.set(key, fetchBbox);
-      loadedZoom.set(key, zoom);
-      updateTreeLayerCount(ns, layer, table.numRows);
+    const table = await loadLayer(ns, layer, fetchBbox, limit, simplify, undefined, tf);
+    const gt = detectGeomType(table);
+    tables.set(key, table);
+    geomTypes.set(key, gt);
+    loadedBbox.set(key, fetchBbox);
+    loadedZoom.set(key, zoom);
+    updateTreeLayerCount(ns, layer, table.numRows);
 
-      debugLog(`loaded ${key}: ${table.numRows} rows, geomType=${gt}, batches=${table.batches.length}`);
-      for (const f of table.schema.fields) {
-        const ext = f.metadata.get("ARROW:extension:name") ?? "";
-        debugLog(`  field: ${f.name}  type=${f.type}  ext=${ext}`);
+    debugLog(`loaded ${key}: ${table.numRows} rows, geomType=${gt}, batches=${table.batches.length}`);
+    for (const f of table.schema.fields) {
+      const ext = f.metadata.get("ARROW:extension:name") ?? "";
+      debugLog(`  field: ${f.name}  type=${f.type}  ext=${ext}`);
+    }
+
+    if (gt === "polygon") {
+      debugLogGeometry(table, key);
+    }
+
+    // If this was the first load and the type is point or line, we used a
+    // conservative initial limit.  Re-fetch with the proper higher limit.
+    if (!knownType && (gt === "point" || gt === "line")) {
+      const higherLimit = getEffectiveLimit(gt, zoom);
+      if (table.numRows >= limit && higherLimit > limit) {
+        debugLog(`re-fetching ${key} with ${gt} limit (${higherLimit})`);
+        const bigger = await loadLayer(ns, layer, fetchBbox, higherLimit);
+        tables.set(key, bigger);
+        geomTypes.set(key, gt);
+        updateTreeLayerCount(ns, layer, bigger.numRows);
       }
+    }
 
-      if (gt === "polygon") {
-        debugLogGeometry(table, key);
-      }
-
-      // If this was the first load and the type is point or line, we used a
-      // conservative initial limit.  Re-fetch with the proper higher limit.
-      if (!knownType && (gt === "point" || gt === "line")) {
-        const higherLimit = getEffectiveLimit(gt, zoom);
-        if (table.numRows >= limit && higherLimit > limit) {
-          debugLog(`re-fetching ${key} with ${gt} limit (${higherLimit})`);
-          const bigger = await loadLayer(ns, layer, fetchBbox, higherLimit);
-          tables.set(key, bigger);
-          geomTypes.set(key, gt);
-          updateTreeLayerCount(ns, layer, bigger.numRows);
-        }
-      }
-
-      // For polygon layers, set a dynamic cooldown that scales with feature count
-      if (gt === "polygon") {
-        const cooldown = getEarcutCooldown(table.numRows);
-        earcutCooldownKeys.add(key);
-        setTimeout(() => {
-          earcutCooldownKeys.delete(key);
-          debugLog(`earcut cooldown expired for ${key} (${cooldown}ms)`);
-        }, cooldown);
-      }
+    // For polygon layers, set a dynamic cooldown that scales with feature count
+    if (gt === "polygon") {
+      const cooldown = getEarcutCooldown(table.numRows);
+      earcutCooldownKeys.add(key);
+      setTimeout(() => {
+        earcutCooldownKeys.delete(key);
+        debugLog(`earcut cooldown expired for ${key} (${cooldown}ms)`);
+      }, cooldown);
     }
   } catch (e) {
     console.error(`Failed to load ${key}:`, e);
@@ -342,9 +362,12 @@ async function loadLayerWithViewport(
 async function main() {
   setStatus("Initializing...");
 
+  // Restore viewport from URL hash (if present)
+  const urlState = readUrlState();
+
   // Load basemap configuration before map init
   const basemapConfigs = await loadBasemapConfig();
-  const map = initMap(basemapConfigs[0].style);
+  const map = initMap(basemapConfigs[0].style, urlState.center, urlState.zoom);
 
   // Discover available namespaces from the catalog (tree endpoint preferred)
   let namespacePaths: string[][];
@@ -373,8 +396,308 @@ async function main() {
 
   // Build recursive catalog tree and render in sidebar
   const tree = buildCatalogTree(namespacePaths, tablesMap);
-  initCatalogBrowser(tree, handleLayerToggle, handleZoom, handleRefresh);
+  initCatalogBrowser(tree, handleLayerToggle, handleZoom, handleRefresh, (key, opacity) => {
+    const style = layerStyles.get(key) ?? getDefaultStyle(geomTypes.get(key) ?? "unknown");
+    style.opacity = opacity;
+    layerStyles.set(key, style);
+    rebuildLayers();
+  }, {
+    onOpenAttributeTable: handleOpenAttributeTable,
+    onOpenSymbology: handleOpenSymbology,
+    onSearch: handleSearch,
+    onMeasure: handleMeasure,
+    onScreenshot: handleScreenshot,
+    onResetMap: handleResetMap,
+  });
   setStatus("No layers visible");
+
+  // Initialize active layers legend
+  initActiveLayers({
+    onToggleVisibility: (key) => {
+      const [ns, layer] = splitKey(key);
+      if (visibleSet.has(key)) {
+        visibleSet.delete(key);
+      } else {
+        visibleSet.add(key);
+      }
+      setTreeLayerChecked(ns, layer, visibleSet.has(key));
+      rebuildLayers();
+      updateStatusBar();
+      updateActiveLayers();
+    },
+    onRemove: (key) => {
+      const [ns, layer] = splitKey(key);
+      visibleSet.delete(key);
+      tables.delete(key);
+      geomTypes.delete(key);
+      layerStyles.delete(key);
+      loadedBbox.delete(key);
+      loadedZoom.delete(key);
+      setTreeLayerChecked(ns, layer, false);
+      rebuildLayers();
+      updateStatusBar();
+      updateActiveLayers();
+    },
+    onReorder: (orderedKeys) => {
+      userLayerOrder = orderedKeys;
+      rebuildLayers();
+      updateActiveLayers();
+    },
+    onOpacityChange: (key, opacity) => {
+      const gt = (geomTypes.get(key) ?? "unknown") as GeomType;
+      const existing = layerStyles.get(key) ?? getDefaultStyle(gt);
+      layerStyles.set(key, { ...existing, opacity });
+      rebuildLayers();
+    },
+    onZoom: (ns, layer) => handleZoom(ns, layer),
+    onOpenAttributeTable: (ns, layer) => handleOpenAttributeTable(ns, layer),
+    onOpenSymbology: (ns, layer) => handleOpenSymbology(ns, layer),
+  });
+
+  // Initialize catalog modal
+  initCatalogModal();
+
+  // Restore layers from URL hash
+  if (urlState.layers && urlState.layers.length > 0) {
+    const loadPromises = urlState.layers.map(async (key) => {
+      const [ns, layer] = splitKey(key);
+      if (!ns || !layer) return;
+      visibleSet.add(key);
+      setTreeLayerChecked(ns, layer, true);
+      await loadLayerWithViewport(ns, layer);
+    });
+    Promise.all(loadPromises).then(() => {
+      rebuildLayers();
+      updateStatusBar();
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // Attribute table handler
+  // -----------------------------------------------------------------------
+
+  function handleOpenAttributeTable(ns: string, layer: string) {
+    const key = `${ns}/${layer}`;
+    const table = tables.get(key);
+    if (!table) {
+      setStatus(`Load ${key} first to view its attribute table`);
+      return;
+    }
+    if (activeAttrTable) activeAttrTable.destroy();
+    activeAttrTable = new AttributeTable(table, key, {
+      onClose: () => { activeAttrTable = null; },
+    });
+    activeAttrTable.mount(document.getElementById("map-container")!);
+  }
+
+  // -----------------------------------------------------------------------
+  // Symbology handler
+  // -----------------------------------------------------------------------
+
+  function handleOpenSymbology(ns: string, layer: string) {
+    const key = `${ns}/${layer}`;
+    const gt = geomTypes.get(key) ?? "unknown";
+    const style = layerStyles.get(key) ?? getDefaultStyle(gt);
+    layerStyles.set(key, style);
+
+    if (activeSymPanel) activeSymPanel.destroy();
+    activeSymPanel = new SymbologyPanel(
+      key,
+      gt,
+      style,
+      (updated) => {
+        layerStyles.set(key, updated);
+        rebuildLayers();
+      },
+      () => { activeSymPanel = null; }
+    );
+    activeSymPanel.mount(document.getElementById("map-container")!);
+  }
+
+  // -----------------------------------------------------------------------
+  // Search handler (coordinate parse + Nominatim geocode)
+  // -----------------------------------------------------------------------
+
+  async function handleSearch(query: string) {
+    if (!query) return;
+
+    // Try parsing as coordinates first
+    const coords = parseCoordinates(query);
+    if (coords) {
+      hideSearchResults();
+      getMap().flyTo({ center: coords, zoom: 14, duration: 1500 });
+      return;
+    }
+
+    // Geocode via Nominatim
+    try {
+      const resp = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`,
+        { headers: { "User-Agent": "LakehouseAI-Webmap/1.0" } }
+      );
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (data.length === 0) {
+        setStatus(`No results for "${query}"`);
+        return;
+      }
+
+      const results: SearchResult[] = data.map((r: any) => ({
+        name: r.display_name,
+        lat: parseFloat(r.lat),
+        lon: parseFloat(r.lon),
+        bbox: r.boundingbox
+          ? [
+              parseFloat(r.boundingbox[2]),
+              parseFloat(r.boundingbox[0]),
+              parseFloat(r.boundingbox[3]),
+              parseFloat(r.boundingbox[1]),
+            ] as [number, number, number, number]
+          : undefined,
+      }));
+
+      showSearchResults(results, (result) => {
+        if (result.bbox) {
+          flyToBounds(result.bbox);
+        } else {
+          getMap().flyTo({ center: [result.lon, result.lat], zoom: 14, duration: 1500 });
+        }
+      });
+    } catch (e) {
+      console.error("Geocode failed:", e);
+    }
+  }
+
+  function parseCoordinates(q: string): [number, number] | null {
+    // Try "lat, lon" or "lat lon"
+    const parts = q.split(/[,\s]+/).map(Number).filter(Number.isFinite);
+    if (parts.length === 2) {
+      let [a, b] = parts;
+      // Heuristic: if |a| > 90, it's likely longitude
+      if (Math.abs(a) > 90 && Math.abs(b) <= 90) {
+        return [a, b]; // [lng, lat]
+      }
+      return [b, a]; // [lng, lat] from "lat, lon"
+    }
+    return null;
+  }
+
+  // -----------------------------------------------------------------------
+  // Measure handler
+  // -----------------------------------------------------------------------
+
+  const measureResult = document.createElement("div");
+  measureResult.className = "measure-result";
+  document.getElementById("map-container")!.appendChild(measureResult);
+
+  measureTool = new MeasureTool(map, (text) => {
+    measureResult.textContent = text;
+  });
+
+  function handleMeasure(mode: "distance" | "area" | "none") {
+    if (!measureTool) return;
+    if (mode === "none") {
+      measureTool.deactivate();
+      measureResult.textContent = "";
+    } else {
+      measureTool.activate(mode);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Screenshot handler
+  // -----------------------------------------------------------------------
+
+  function handleScreenshot() {
+    captureMap(map.getCanvas());
+  }
+
+  // -----------------------------------------------------------------------
+  // Reset map — remove all layers and return to initial view
+  // -----------------------------------------------------------------------
+
+  function handleResetMap() {
+    debugLog("Reset map triggered");
+    // Uncheck all catalog tree checkboxes
+    for (const key of [...tables.keys()]) {
+      const [ns, layer] = splitKey(key);
+      setTreeLayerChecked(ns, layer, false);
+    }
+    // Destroy any active time sliders
+    for (const slider of activeTimeSliders.values()) slider.destroy();
+    activeTimeSliders.clear();
+    timeFilters.clear();
+    // Clear all layer state
+    tables.clear();
+    visibleSet.clear();
+    geomTypes.clear();
+    layerStyles.clear();
+    loadedBbox.clear();
+    loadedZoom.clear();
+    userLayerOrder = null;
+    // Rebuild (clears all deck.gl layers)
+    rebuildLayers();
+    updateActiveLayers();
+    updateStatusBar();
+    // Fly back to initial view
+    resetView();
+  }
+
+  // -----------------------------------------------------------------------
+  // Time slider — check for temporal columns on first layer load
+  // -----------------------------------------------------------------------
+
+  async function checkTemporalColumns(ns: string, layer: string) {
+    const key = `${ns}/${layer}`;
+    if (activeTimeSliders.has(key)) return;
+    try {
+      const schema = await fetchSchema(ns, layer);
+      if (schema.temporal_columns.length === 0) return;
+
+      const tc = schema.temporal_columns[0]; // Use first temporal column
+      // Parse min/max as UTC to avoid local-timezone shift.
+      // The server returns "YYYY-MM-DD HH:MM:SS" without timezone info;
+      // appending "Z" forces UTC interpretation so toISOString() round-trips
+      // correctly back to the same wall-clock time the database stores.
+      const config: TimeConfig = {
+        column: tc.name,
+        min: new Date(tc.min.replace(" ", "T") + "Z"),
+        max: new Date(tc.max.replace(" ", "T") + "Z"),
+        distinctCount: tc.distinct_count,
+      };
+
+      /** Format a Date for the DuckDB time filter query (no timezone, no T). */
+      const fmtForQuery = (d: Date): string =>
+        d.toISOString().slice(0, 19).replace("T", " ");
+
+      const slider = new TimeSlider(config, async (start, end) => {
+        timeFilters.set(key, {
+          column: tc.name,
+          start: fmtForQuery(start),
+          end: fmtForQuery(end),
+        });
+        // Force reload with the new time filter
+        loadedBbox.delete(key);
+        await loadLayerWithViewport(ns, layer);
+        rebuildLayers();
+        updateStatusBar();
+      }, () => {
+        // On close — remove time filter and reload
+        timeFilters.delete(key);
+        activeTimeSliders.delete(key);
+        loadedBbox.delete(key);
+        loadLayerWithViewport(ns, layer).then(() => {
+          rebuildLayers();
+          updateStatusBar();
+        });
+      });
+
+      slider.mount(document.getElementById("map-container")!);
+      activeTimeSliders.set(key, slider);
+    } catch {
+      // Schema endpoint not available — skip time slider
+    }
+  }
 
   // --- Sidebar toggle ---
   const sidebar = document.getElementById("sidebar");
@@ -407,6 +730,14 @@ async function main() {
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMoveEnd(() => {
+    // Update URL hash with current viewport + visible layers
+    const c = getMap().getCenter();
+    writeUrlState({
+      zoom: getMap().getZoom(),
+      center: [c.lng, c.lat],
+      layers: [...visibleSet],
+    });
+
     if (visibleSet.size === 0) return;
     if (reloadTimer) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(reloadVisibleLayers, 400);
@@ -414,28 +745,10 @@ async function main() {
 
   async function reloadVisibleLayers() {
     const bbox = getViewportBbox();
-    const currentZoom = getMap().getZoom();
 
     const reloadKeys = [...visibleSet].filter((key) => {
       if (loadingKeys.has(key)) return false;
       if (earcutCooldownKeys.has(key)) return false;
-
-      const gt = geomTypes.get(key);
-      // Only point layers aggregate; polygons/lines/unknown never do
-      const shouldAggregate = gt === "point" && currentZoom < AGGREGATE_ZOOM_THRESHOLD;
-
-      // Reload if we crossed the aggregate/full-res threshold (points only)
-      const wasAggregated = aggregatedKeys.has(key);
-      if (wasAggregated !== shouldAggregate) return true;
-
-      // In aggregate mode, reload if the resolution bucket changed
-      if (shouldAggregate && wasAggregated) {
-        const prevZoom = loadedZoom.get(key);
-        if (prevZoom !== undefined) {
-          if (getAggregateResolution(prevZoom) !== getAggregateResolution(currentZoom))
-            return true;
-        }
-      }
 
       const prev = loadedBbox.get(key);
       if (!prev) return true;
@@ -470,10 +783,11 @@ async function main() {
       // Load on demand
       if (!tables.has(key)) {
         await loadLayerWithViewport(ns, layer);
+        // Check for temporal columns on first load
+        checkTemporalColumns(ns, layer);
       }
     } else {
       visibleSet.delete(key);
-      aggregatedKeys.delete(key);
       loadedZoom.delete(key);
     }
 
@@ -487,13 +801,12 @@ async function main() {
 
   async function handleRefresh() {
     debugLog("Manual refresh triggered");
-    // Clear bbox + cooldown + aggregation caches but keep table data so a
+    // Clear bbox + cooldown caches but keep table data so a
     // failed reload doesn't lose the layer.
     for (const key of [...visibleSet]) {
       loadedBbox.delete(key);
       loadedZoom.delete(key);
       earcutCooldownKeys.delete(key);
-      aggregatedKeys.delete(key);
     }
     setStatus("Refreshing...");
     await Promise.all(
@@ -577,8 +890,8 @@ async function main() {
     if (dx + dy > 5) {
       map.dragPan.disable();
       selectBox.style.display = "block";
-      selectBox.style.left = `${Math.min(dragStart.x, cx) + rect.left}px`;
-      selectBox.style.top = `${Math.min(dragStart.y, cy) + rect.top}px`;
+      selectBox.style.left = `${Math.min(dragStart.x, cx)}px`;
+      selectBox.style.top = `${Math.min(dragStart.y, cy)}px`;
       selectBox.style.width = `${dx}px`;
       selectBox.style.height = `${dy}px`;
     }
