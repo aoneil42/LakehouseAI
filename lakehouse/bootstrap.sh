@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+###############################################################################
+# bootstrap.sh — Idempotent setup for the spatial lakehouse stack
+#
+# Prerequisites: docker compose up -d  (core stack, no "heavy" profile)
+#
+# Safe to re-run: each step checks whether it has already been completed.
+#
+# What it does:
+#   1. Generate Garage secrets (if garage.toml still has placeholders)
+#   2. Restart Garage with real config
+#   3. Assign Garage node layout (single-node, 10GB capacity)
+#   4. Create S3 bucket + access key (or reuse existing .env creds)
+#   5. Save credentials to .env (all config files read from env at runtime)
+#   6. Bootstrap LakeKeeper (accept ToS, create warehouse)
+#   7. Restart services so everything connects
+###############################################################################
+
+GARAGE="docker exec garage /garage"
+DC="docker compose"
+
+echo ""
+echo "╔══════════════════════════════════════════════╗"
+echo "║   Spatial Lakehouse — Bootstrap              ║"
+echo "╚══════════════════════════════════════════════╝"
+echo ""
+
+# ── Helper: wait for a service to be reachable ────────────────────────
+wait_for() {
+  local url="$1" label="$2" max="${3:-30}"
+  local i=0
+  echo "   Waiting for ${label}..."
+  while ! curl -sf "$url" > /dev/null 2>&1; do
+    i=$((i + 1))
+    if [ "$i" -ge "$max" ]; then
+      echo "   ✗ ${label} not ready after ${max}s"
+      exit 1
+    fi
+    sleep 1
+  done
+  echo "   ✓ ${label} is ready."
+}
+
+# ── 1. Generate Garage secrets (idempotent) ───────────────────────────
+if grep -q "PLACEHOLDER_RPC_SECRET" garage.toml 2>/dev/null; then
+  echo "① Generating Garage secrets..."
+  RPC_SECRET=$(openssl rand -hex 32)
+  ADMIN_TOKEN=$(openssl rand -hex 32)
+  METRICS_TOKEN=$(openssl rand -hex 32)
+
+  sed -i.bak \
+    -e "s|PLACEHOLDER_RPC_SECRET|${RPC_SECRET}|" \
+    -e "s|PLACEHOLDER_ADMIN_TOKEN|${ADMIN_TOKEN}|" \
+    -e "s|PLACEHOLDER_METRICS_TOKEN|${METRICS_TOKEN}|" \
+    garage.toml
+  rm -f garage.toml.bak
+
+  echo "   ✓ garage.toml updated with real secrets."
+
+  echo "② Restarting Garage with real config..."
+  $DC restart garage
+  wait_for "http://localhost:3903/health" "Garage admin API" 30
+else
+  echo "① Garage secrets already configured — skipping."
+fi
+
+# ── 2. Assign layout (idempotent) ─────────────────────────────────────
+echo "③ Configuring Garage cluster layout..."
+NODE_ID=$($GARAGE node id 2>/dev/null | head -n1 | cut -d@ -f1)
+if [ -z "$NODE_ID" ]; then
+  echo "   ✗ Failed to get Garage node ID. Is Garage running?"
+  exit 1
+fi
+echo "   Node: ${NODE_ID:0:16}…"
+
+# layout assign is idempotent; apply will no-op if version already applied
+$GARAGE layout assign -z dc1 -c 10G "$NODE_ID" 2>/dev/null || true
+LAYOUT_VER=$($GARAGE layout show 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | grep -oE "layout version: [0-9]+" | awk '{print $NF}' || echo "0")
+if [ "$LAYOUT_VER" = "0" ] || [ -z "$LAYOUT_VER" ]; then
+  $GARAGE layout apply --version 1 2>/dev/null
+  echo "   ✓ Layout applied (10GB single-node)."
+else
+  echo "   ✓ Layout already applied (version ${LAYOUT_VER})."
+fi
+
+# ── 3. Create bucket + key (idempotent) ───────────────────────────────
+echo "④ Creating bucket 'lakehouse'..."
+$GARAGE bucket create lakehouse 2>/dev/null || echo "   (bucket already exists)"
+
+# Reuse existing credentials from .env if available
+if [ -f .env ] && grep -q "GARAGE_KEY_ID=" .env 2>/dev/null; then
+  echo "   ✓ Credentials found in .env — reusing."
+  # shellcheck disable=SC1091
+  source .env
+  KEY_ID="${GARAGE_KEY_ID}"
+  SECRET_KEY="${GARAGE_SECRET_KEY}"
+  ADMIN_TOKEN="${GARAGE_ADMIN_TOKEN:-}"
+else
+  echo "   Creating access key..."
+  KEY_OUTPUT=$($GARAGE key create lakehouse-key 2>&1)
+
+  KEY_ID=$(echo "$KEY_OUTPUT" | grep -i "Key ID" | awk '{print $NF}')
+  SECRET_KEY=$(echo "$KEY_OUTPUT" | grep -i "Secret key" | awk '{print $NF}')
+
+  # Fallback: try alternate field names
+  if [ -z "$KEY_ID" ]; then
+    KEY_ID=$(echo "$KEY_OUTPUT" | grep -iE "access.key|key.id" | awk '{print $NF}')
+  fi
+  if [ -z "$SECRET_KEY" ]; then
+    SECRET_KEY=$(echo "$KEY_OUTPUT" | grep -iE "secret.key|secret.access" | awk '{print $NF}')
+  fi
+
+  if [ -z "$KEY_ID" ] || [ -z "$SECRET_KEY" ]; then
+    echo ""
+    echo "   ✗ Could not parse key output."
+    echo "   Raw output:"
+    echo "$KEY_OUTPUT"
+    echo ""
+    echo "   Manually set GARAGE_KEY_ID and GARAGE_SECRET_KEY in .env and re-run."
+    exit 1
+  fi
+
+  $GARAGE bucket allow --read --write --owner lakehouse --key lakehouse-key 2>/dev/null
+  echo "   ✓ Key created and granted permissions."
+fi
+
+echo "   Key ID:     ${KEY_ID}"
+echo "   Secret:     ${SECRET_KEY:0:8}…"
+
+# ── 4. Save .env (idempotent — overwrites with same or new values) ────
+echo "⑤ Saving credentials to .env..."
+# Preserve ADMIN_TOKEN from step 1 if it was generated this run
+if [ -z "${ADMIN_TOKEN:-}" ] && [ -f .env ]; then
+  ADMIN_TOKEN=$(grep "^GARAGE_ADMIN_TOKEN=" .env 2>/dev/null | cut -d= -f2 || echo "")
+fi
+
+cat > .env <<EOF
+# Generated by bootstrap.sh — $(date -Iseconds 2>/dev/null || date)
+GARAGE_KEY_ID=${KEY_ID}
+GARAGE_SECRET_KEY=${SECRET_KEY}
+GARAGE_ADMIN_TOKEN=${ADMIN_TOKEN:-}
+
+# pygeoapi server URL — controls link generation in OGC API responses.
+# "auto" = detect EC2 public IP or Docker host IP automatically.
+PYGEOAPI_SERVER_URL=auto
+EOF
+echo "   ✓ .env saved."
+
+# ── 5. Bootstrap LakeKeeper (idempotent) ──────────────────────────────
+echo "⑥ Bootstrapping LakeKeeper..."
+$DC restart lakekeeper
+wait_for "http://localhost:8181/health" "LakeKeeper" 30
+
+# Accept terms of use
+BOOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X POST http://localhost:8181/management/v1/bootstrap \
+  -H "Content-Type: application/json" \
+  --data '{"accept-terms-of-use": true}' 2>/dev/null) || true
+
+case "$BOOT_HTTP" in
+  200|204) echo "   ✓ Terms of use accepted." ;;
+  409|422) echo "   ✓ Already bootstrapped." ;;
+  *)
+    echo "   ⚠ Bootstrap returned HTTP ${BOOT_HTTP}. Retrying..."
+    sleep 3
+    BOOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+      -X POST http://localhost:8181/management/v1/bootstrap \
+      -H "Content-Type: application/json" \
+      --data '{"accept-terms-of-use": true}' 2>/dev/null) || true
+    case "$BOOT_HTTP" in
+      200|204) echo "   ✓ Terms of use accepted (retry)." ;;
+      409|422) echo "   ✓ Already bootstrapped." ;;
+      *) echo "   ✗ Bootstrap failed (HTTP ${BOOT_HTTP}). Check LakeKeeper logs." ;;
+    esac
+    ;;
+esac
+
+# Create warehouse — template create-warehouse.json with env vars at call time
+echo "   Creating warehouse..."
+WAREHOUSE_JSON=$(sed \
+  -e "s|\${GARAGE_KEY_ID}|${KEY_ID}|g" \
+  -e "s|\${GARAGE_SECRET_KEY}|${SECRET_KEY}|g" \
+  create-warehouse.json)
+
+HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" \
+  -X POST http://localhost:8181/management/v1/warehouse \
+  -H "Content-Type: application/json" \
+  --data "$WAREHOUSE_JSON" 2>/dev/null) || true
+
+case "$HTTP_CODE" in
+  200|201) echo "   ✓ Warehouse 'lakehouse' created." ;;
+  409)     echo "   ✓ Warehouse 'lakehouse' already exists." ;;
+  *)       echo "   ⚠ Warehouse creation returned HTTP ${HTTP_CODE}." ;;
+esac
+
+# ── 6. Restart services that depend on credentials ────────────────────
+echo "⑦ Restarting services with credentials..."
+$DC restart duckdb mcp-server api pygeoapi geoservices
+sleep 2
+echo "   ✓ Services restarted."
+
+# ── Done ──────────────────────────────────────────────────────────────
+echo ""
+echo "╔══════════════════════════════════════════════╗"
+echo "║   ✅  Bootstrap complete!                    ║"
+echo "╚══════════════════════════════════════════════╝"
+echo ""
+echo "  Garage S3 ............. http://localhost:3900"
+echo "  LakeKeeper UI ......... http://localhost:8181"
+echo ""
+echo "  DuckDB (interactive):"
+echo "    docker compose exec duckdb /duckdb -init /config/init.sql"
+echo ""
+echo "  SedonaSpark (when needed):"
+echo "    docker compose --profile heavy up sedona -d"
+echo "    Open http://localhost:8888 for Jupyter"
+echo ""
+echo "  ── Quick test ──"
+echo '  docker compose exec duckdb /duckdb -init /config/init.sql -c "SELECT ST_Point(-104.99, 39.74) AS denver;"'
+echo ""

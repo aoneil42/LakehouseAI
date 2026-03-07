@@ -1,0 +1,55 @@
+# Standalone overlay — use when NOT using the unified compose.
+# The unified docker-compose.yml in lakehouse/ already includes spatial-agent
+# as an optional profile (--profile agent).
+#
+# Standalone usage (from lakehouse/ directory):
+#   docker compose -f docker-compose.yml \
+#     -f ../spatialagent/docker-compose.agent.yml up -d
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  spatial-agent:
+    build:
+      context: ../spatialagent
+      dockerfile: Dockerfile
+    container_name: spatial-agent
+    ports:
+      - "8090:8090"
+    environment:
+      SA_MCP_ENDPOINT: "http://mcp-server:8082/mcp"
+      SA_LAKEHOUSE_API: "http://lakehouse-api:8000"
+      SA_LLM_BACKEND: "${SA_LLM_BACKEND:-ollama}"
+      SA_VLLM_BASE_URL: "${SA_VLLM_BASE_URL:-http://vllm:8000/v1}"
+      SA_OLLAMA_BASE_URL: "${SA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      SA_PRIMARY_MODEL: "${SA_PRIMARY_MODEL:-devstral-small-2}"
+      SA_ACTIVE_MODEL: "${SA_ACTIVE_MODEL:-}"
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+    healthcheck:
+      test: ["CMD", "python", "scripts/health_check.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+networks:
+  lakehouse:
+    external: true
+    name: lakehouse_lakehouse

@@ -1,0 +1,33 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "webmap",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--", "--host"],
+      "port": 5173,
+      "cwd": "lakehouse/webmap"
+    },
+    {
+      "name": "lakehouse-api",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "port": 8000,
+      "cwd": "lakehouse/api"
+    },
+    {
+      "name": "iceberg-mcp",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "spatial_lakehouse_mcp.server"],
+      "port": 8082,
+      "cwd": "icebergmcp"
+    },
+    {
+      "name": "spatial-agent",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["spatial_agent.server:app", "--host", "0.0.0.0", "--port", "8090", "--reload"],
+      "port": 8090,
+      "cwd": "spatialagent/src"
+    }
+  ]
+}

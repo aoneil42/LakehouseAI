@@ -1,0 +1,6 @@
+The SQL you generated failed:
+Error: {error_message}
+Original query: {failed_sql}
+Original user request: {user_message}
+{schema_context}
+Fix the SQL. Return ONLY the corrected query.
