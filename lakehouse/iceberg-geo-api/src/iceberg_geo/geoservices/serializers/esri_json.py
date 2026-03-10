@@ -7,12 +7,27 @@ It differs from GeoJSON in geometry representation:
 - Polylines use {"paths": [[[x,y],...], ...]}
 - Points use {"x": val, "y": val}
 - SpatialReference is an object: {"wkid": 4326}
+
+Uses DuckDB's ST_AsGeoJSON() for geometry conversion, then transforms
+the GeoJSON geometry dict to Esri format — avoids Shapely round-trip.
 """
 
-from shapely import wkb
+import json
+import uuid
 
+from iceberg_geo.query.catalog import get_connection
 from iceberg_geo.query.geometry import ESRI_GEOMETRY_TYPE_MAP
 from iceberg_geo.query.models import FeatureSchema, QueryResult
+
+
+def _geojson_expr(geom_col: str, reg_name: str, conn) -> str:
+    """Build ST_AsGeoJSON expression, casting BLOB to GEOMETRY if needed."""
+    col_type = conn.execute(
+        f"SELECT typeof(\"{geom_col}\") FROM {reg_name} LIMIT 1"
+    ).fetchone()[0].upper()
+    if "GEOMETRY" in col_type:
+        return f'ST_AsGeoJSON("{geom_col}")'
+    return f'ST_AsGeoJSON(ST_GeomFromWKB("{geom_col}"))'
 
 
 def serialize(result: QueryResult, schema: FeatureSchema) -> dict:
@@ -37,22 +52,49 @@ def serialize(result: QueryResult, schema: FeatureSchema) -> dict:
         {"name": "__oid", "type": "esriFieldTypeOID", "alias": "OID"},
     ] + _build_field_definitions(schema)
 
-    features = []
-    table_dict = result.features.to_pydict()
     geom_col = result.geometry_column
+    col_names = result.features.column_names
+    non_geom_cols = [c for c in col_names if c != geom_col]
+    has_geometry = geom_col in col_names
 
-    for i in range(result.features.num_rows):
-        attributes = {}
-        geometry = None
-
-        for col_name in table_dict:
-            if col_name == geom_col:
-                wkb_bytes = table_dict[col_name][i]
-                if wkb_bytes:
-                    geometry = _wkb_to_esri_geometry(wkb_bytes)
+    # Use DuckDB ST_AsGeoJSON() instead of Shapely wkb.loads()
+    conn = get_connection()
+    reg_name = f"__esri_{uuid.uuid4().hex[:8]}"
+    conn.register(reg_name, result.features)
+    try:
+        non_geom_select = ", ".join(f'"{c}"' for c in non_geom_cols)
+        if has_geometry:
+            geojson_sql = _geojson_expr(geom_col, reg_name, conn)
+            if non_geom_select:
+                sql = (
+                    f'SELECT {non_geom_select}, '
+                    f'{geojson_sql} AS __geojson '
+                    f'FROM {reg_name}'
+                )
             else:
-                attributes[col_name] = _to_esri_value(table_dict[col_name][i])
+                sql = (
+                    f'SELECT {geojson_sql} AS __geojson '
+                    f'FROM {reg_name}'
+                )
+        else:
+            sql = f'SELECT {non_geom_select} FROM {reg_name}'
+        rows = conn.execute(sql).fetchall()
+        desc = conn.execute(sql).description
+    finally:
+        conn.unregister(reg_name)
 
+    col_map = [d[0] for d in desc]
+
+    features = []
+    for row in rows:
+        row_dict = dict(zip(col_map, row))
+        geojson_str = row_dict.pop("__geojson", None)
+        geometry = None
+        if geojson_str:
+            gj = json.loads(geojson_str)
+            geometry = _geojson_to_esri(gj)
+
+        attributes = {k: _to_esri_value(v) for k, v in row_dict.items()}
         features.append(
             {
                 "attributes": attributes,
@@ -70,30 +112,23 @@ def serialize(result: QueryResult, schema: FeatureSchema) -> dict:
     }
 
 
-def _wkb_to_esri_geometry(wkb_bytes: bytes) -> dict:
-    """Convert WKB to Esri JSON geometry representation."""
-    geom = wkb.loads(wkb_bytes)
-    geom_type = geom.geom_type
-
-    if geom_type == "Point":
-        return {"x": geom.x, "y": geom.y}
-    elif geom_type in ("Polygon", "MultiPolygon"):
-        rings = []
-        polys = [geom] if geom_type == "Polygon" else list(geom.geoms)
-        for poly in polys:
-            rings.append(list(poly.exterior.coords))
-            for interior in poly.interiors:
-                rings.append(list(interior.coords))
-        return {"rings": rings}
-    elif geom_type in ("LineString", "MultiLineString"):
-        paths = []
-        lines = [geom] if geom_type == "LineString" else list(geom.geoms)
-        for line in lines:
-            paths.append(list(line.coords))
-        return {"paths": paths}
-    elif geom_type == "MultiPoint":
-        return {"points": [list(p.coords[0]) for p in geom.geoms]}
-
+def _geojson_to_esri(gj: dict) -> dict:
+    """Convert a GeoJSON geometry dict to Esri JSON geometry."""
+    t = gj.get("type")
+    c = gj.get("coordinates")
+    if t == "Point":
+        return {"x": c[0], "y": c[1]}
+    elif t == "MultiPoint":
+        return {"points": c}
+    elif t == "LineString":
+        return {"paths": [c]}
+    elif t == "MultiLineString":
+        return {"paths": c}
+    elif t == "Polygon":
+        return {"rings": c}
+    elif t == "MultiPolygon":
+        # Flatten: each polygon's rings become top-level rings
+        return {"rings": [ring for polygon in c for ring in polygon]}
     return None
 
 

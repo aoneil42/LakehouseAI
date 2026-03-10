@@ -217,7 +217,10 @@ def test_validate_spatial_predicate():
 
 def test_sample_data(duckdb_conn):
     """Test row sampling."""
-    rows = duckdb_conn.execute("SELECT * FROM test.buildings LIMIT 3").fetchall()
+    rows = duckdb_conn.execute(
+        "SELECT id, name, type, ST_AsGeoJSON(geometry) AS geometry "
+        "FROM test.buildings LIMIT 3"
+    ).fetchall()
     assert len(rows) == 3
 
 

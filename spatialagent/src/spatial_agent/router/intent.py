@@ -11,7 +11,11 @@ SPATIAL_KEYWORDS = {
 }
 
 _META_PATTERNS = re.compile(
-    r"(?i)\b(what|which|list|show|describe|tell me about)\b.*(table|schema|column|database|catalog|namespace)",
+    r"(?i)("
+    r"\b(what|which|list|show|describe|tell me about|find|search)\b"
+    r".*(table|schema|column|database|catalog|namespace|dataset|layer)"
+    r"|\b(are there|is there|do we have)\b.*\b(table|dataset|layer|column)s?\b"
+    r")",
 )
 
 _GREETING_PATTERNS = re.compile(

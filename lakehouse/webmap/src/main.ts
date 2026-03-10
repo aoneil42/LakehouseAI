@@ -22,9 +22,7 @@ import {
   fetchTableBbox,
   fetchSchema,
   expandBbox,
-  MAX_FEATURES_POINT,
-  MAX_FEATURES_LINE,
-  MAX_FEATURES_POLYGON,
+  MAX_FEATURES_PER_LAYER,
 } from "./queries";
 import type { Bbox, TimeFilter } from "./queries";
 import { buildAutoLayer, detectGeomType, getFeatureProps } from "./layers";
@@ -245,20 +243,10 @@ const handleClick: FeatureClickHandler = (info) => {
 // Layer loading with viewport bbox
 // ---------------------------------------------------------------------------
 
-/** Return the appropriate feature limit for a given geometry type.
- *  The GeoArrow pipeline + earcut cooldowns handle large polygon counts;
- *  the real OOM guard is MAX_RESPONSE_BYTES (256 MB) in geoarrow.ts. */
-function getEffectiveLimit(gt?: GeomType, _zoom?: number): number {
-  switch (gt) {
-    case "polygon":
-      return MAX_FEATURES_POLYGON;
-    case "line":
-      return MAX_FEATURES_LINE;
-    case "point":
-      return MAX_FEATURES_POINT;
-    default:
-      return MAX_FEATURES_POLYGON; // conservative for unknown
-  }
+/** Return the feature limit per layer (uniform across all geometry types).
+ *  The real OOM guard is MAX_RESPONSE_BYTES (256 MB) in geoarrow.ts. */
+function getEffectiveLimit(_gt?: GeomType, _zoom?: number): number {
+  return MAX_FEATURES_PER_LAYER;
 }
 
 /** Compute simplification tolerance for a given zoom level.
@@ -316,19 +304,6 @@ async function loadLayerWithViewport(
 
     if (gt === "polygon") {
       debugLogGeometry(table, key);
-    }
-
-    // If this was the first load and the type is point or line, we used a
-    // conservative initial limit.  Re-fetch with the proper higher limit.
-    if (!knownType && (gt === "point" || gt === "line")) {
-      const higherLimit = getEffectiveLimit(gt, zoom);
-      if (table.numRows >= limit && higherLimit > limit) {
-        debugLog(`re-fetching ${key} with ${gt} limit (${higherLimit})`);
-        const bigger = await loadLayer(ns, layer, fetchBbox, higherLimit);
-        tables.set(key, bigger);
-        geomTypes.set(key, gt);
-        updateTreeLayerCount(ns, layer, bigger.numRows);
-      }
     }
 
     // For polygon layers, set a dynamic cooldown that scales with feature count

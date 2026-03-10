@@ -21,7 +21,7 @@ export function getDefaultStyle(geomType: GeomType): LayerStyle {
         fillColor: [100, 100, 100, 255],
         strokeColor: [255, 255, 255, 200],
         strokeWidth: 1,
-        radius: 300,
+        radius: 5, // pixels
       };
     case "line":
       return {
@@ -109,8 +109,9 @@ export class SymbologyPanel {
     if (this.geomType === "point") {
       controlsHtml += `
         <div class="sym-row">
-          <label>Radius</label>
-          <input type="range" class="sym-radius" min="50" max="5000" value="${s.radius}" />
+          <label>Size (px)</label>
+          <input type="range" class="sym-radius" min="1" max="20" value="${s.radius}" />
+          <span class="sym-radius-val">${s.radius}px</span>
         </div>
       `;
     }
@@ -118,8 +119,9 @@ export class SymbologyPanel {
     if (this.geomType === "line") {
       controlsHtml += `
         <div class="sym-row">
-          <label>Width</label>
-          <input type="range" class="sym-width" min="1" max="10" value="${s.strokeWidth}" />
+          <label>Width (px)</label>
+          <input type="range" class="sym-width" min="1" max="20" value="${s.strokeWidth}" />
+          <span class="sym-width-val">${s.strokeWidth}px</span>
         </div>
       `;
     }
@@ -160,16 +162,20 @@ export class SymbologyPanel {
     this.container
       .querySelector(".sym-radius")
       ?.addEventListener("input", (e) => {
-        this.style.radius = parseInt((e.target as HTMLInputElement).value);
+        const val = parseInt((e.target as HTMLInputElement).value);
+        this.style.radius = val;
+        const label = this.container.querySelector(".sym-radius-val");
+        if (label) label.textContent = `${val}px`;
         this.onChange(this.style);
       });
 
     this.container
       .querySelector(".sym-width")
       ?.addEventListener("input", (e) => {
-        this.style.strokeWidth = parseInt(
-          (e.target as HTMLInputElement).value
-        );
+        const val = parseInt((e.target as HTMLInputElement).value);
+        this.style.strokeWidth = val;
+        const label = this.container.querySelector(".sym-width-val");
+        if (label) label.textContent = `${val}px`;
         this.onChange(this.style);
       });
   }

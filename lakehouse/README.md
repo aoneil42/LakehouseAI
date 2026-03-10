@@ -441,7 +441,7 @@ the map in real time.
 ```
 ┌─────────────┐     POST /api/agent/chat      ┌───────────────┐
 │   Webmap     │ ──────────────────────────────▶│  Agent (8090) │
-│  Chat Panel  │                                │  (future repo)│
+│  Chat Panel  │                                │  spatialagent/ │
 └──────┬───────┘                                └───────┬───────┘
        │ ws://.../ws/agent/{session_id}                 │
        │                                                │ MCP tools

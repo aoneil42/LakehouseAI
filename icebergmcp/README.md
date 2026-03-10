@@ -2,7 +2,7 @@
 
 Iceberg-native geospatial MCP server powered by DuckDB. Part of the [LakehouseAI](../README.md) monorepo.
 
-Provides 18 tools for catalog discovery, spatial queries, analysis, and data management over an Apache Iceberg lakehouse. An LLM agent connects via the Model Context Protocol (MCP) and can explore schemas, run spatial SQL, perform point-in-polygon aggregation, export GeoJSON, and more — all through a single DuckDB connection.
+Provides 19 tools for catalog discovery, spatial queries, analysis, and data management over an Apache Iceberg lakehouse. An LLM agent connects via the Model Context Protocol (MCP) and can explore schemas, run spatial SQL, perform point-in-polygon aggregation, export GeoJSON, and more — all through a single DuckDB connection.
 
 ## Architecture
 
@@ -28,13 +28,13 @@ DuckDB (in-process, :memory:)
 | Catalog Metadata | PostgreSQL | 5432 |
 | MCP Server | This project (FastMCP + DuckDB) | 8082 |
 
-## Tools (18 total)
+## Tools (19 total)
 
 ### Catalog Discovery
 | Tool | Description |
 |------|-------------|
 | `list_namespaces` | List schemas in the Iceberg catalog |
-| `list_tables` | List tables, optionally filtered by namespace |
+| `list_tables` | List tables with accurate column counts, optionally filtered by namespace |
 | `describe_table` | Column names, types, geometry detection |
 | `table_snapshots` | Snapshot history for time-travel queries |
 | `search_tables` | Search tables by name, column, or geometry presence |
@@ -62,6 +62,7 @@ DuckDB (in-process, :memory:)
 | `sample_data` | Preview rows from a table |
 | `table_stats` | Row counts, column stats, geometry summary |
 | `export_geojson` | Export as GeoJSON FeatureCollection |
+| `materialize_result` | Write query results to a scratch Iceberg table for map display |
 
 ### System
 | Tool | Description |
@@ -79,7 +80,7 @@ icebergmcp/
 ├── src/
 │   └── spatial_lakehouse_mcp/
 │       ├── __init__.py
-│       ├── server.py              # FastMCP server + 18 tool definitions
+│       ├── server.py              # FastMCP server + 19 tool definitions
 │       ├── config.py              # Pydantic settings (SLM_ env prefix)
 │       ├── engine.py              # DuckDB connection + catalog attachment
 │       └── validators.py          # SQL safety + input validation

@@ -114,6 +114,8 @@ def get_connection() -> duckdb.DuckDBPyConnection:
             conn.execute(f"LOAD {ext};")
             logger.info(f"Loaded extension: {ext}")
 
+        conn.execute("SET geometry_always_xy = true")
+
         # Create S3 secret for Garage
         if settings.s3_access_key_id:
             conn.execute(_build_s3_secret_sql())

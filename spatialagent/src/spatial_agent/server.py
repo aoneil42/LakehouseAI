@@ -16,6 +16,8 @@ from .planner.prompts import build_error_prompt, build_spatial_prompt, build_ana
 from .planner.schema import SchemaBuilder
 from .planner.sql_gen import extract_sql, validate_sql, generate_sql
 from .router.intent import classify
+from .router.llm_search import fuzzy_column_search, fuzzy_table_search
+from .router.tool_router import match as match_tool, format_result as format_tool_result
 from .session import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -67,12 +69,122 @@ async def chat(req: ChatRequest):
             yield _sse({"type": "status", "content": "Discovering schema..."})
             schema_context = await schema_builder.build_context(req.message, session)
 
-            # Meta: answer table/schema questions directly from schema context
+            # Meta: route to specific MCP tool if possible, else schema context
             if intent == "meta":
-                yield _sse({
-                    "type": "result",
-                    "content": schema_context,
-                })
+                known_tables = session.schema_cache.get("_tables", [])
+                route = match_tool(req.message, known_tables)
+
+                if route and route.tool_name == "search_tables":
+                    # Use LLM fuzzy search for better semantic matching
+                    yield _sse({
+                        "type": "status",
+                        "content": "Searching catalog...",
+                    })
+                    try:
+                        base_url = (
+                            settings.vllm_base_url
+                            if settings.llm_backend == "vllm"
+                            else settings.ollama_base_url
+                        )
+                        available = await detect_available_models(
+                            settings.llm_backend, base_url
+                        )
+                        model = available[0] if available else settings.primary_model
+
+                        if "column_pattern" in route.arguments:
+                            # Column search — need table descriptions
+                            # Ensure all tables are described in cache
+                            for t in known_tables:
+                                cache_key = f"_desc_{t['full_name']}"
+                                if cache_key not in session.schema_cache:
+                                    desc = await mcp_client.call_tool(
+                                        "describe_table",
+                                        {"table": f"{t['namespace']}.{t['name']}"},
+                                    )
+                                    session.schema_cache[cache_key] = desc
+
+                            content = await fuzzy_column_search(
+                                req.message,
+                                known_tables,
+                                session.schema_cache,
+                                llm_client,
+                                model,
+                            )
+                        else:
+                            # Table name search
+                            content = await fuzzy_table_search(
+                                req.message,
+                                known_tables,
+                                llm_client,
+                                model,
+                            )
+                        yield _sse({"type": "result", "content": content})
+                    except Exception as e:
+                        # Fall back to MCP search_tables on LLM failure
+                        logger.warning("LLM search failed, falling back: %s", e)
+                        result = await mcp_client.call_tool(
+                            route.tool_name, route.arguments
+                        )
+                        yield _sse({
+                            "type": "result",
+                            "content": format_tool_result(
+                                route.tool_name, result
+                            ),
+                        })
+                elif route:
+                    yield _sse({
+                        "type": "status",
+                        "content": f"Calling {route.tool_name}...",
+                    })
+                    result = await mcp_client.call_tool(
+                        route.tool_name, route.arguments
+                    )
+                    yield _sse({
+                        "type": "result",
+                        "content": format_tool_result(route.tool_name, result),
+                    })
+                else:
+                    # No tool match — use LLM fuzzy search as fallback
+                    yield _sse({
+                        "type": "status",
+                        "content": "Searching catalog...",
+                    })
+                    try:
+                        base_url = (
+                            settings.vllm_base_url
+                            if settings.llm_backend == "vllm"
+                            else settings.ollama_base_url
+                        )
+                        available = await detect_available_models(
+                            settings.llm_backend, base_url
+                        )
+                        model = available[0] if available else settings.primary_model
+
+                        # Ensure all tables are described in cache
+                        for t in known_tables:
+                            cache_key = f"_desc_{t['full_name']}"
+                            if cache_key not in session.schema_cache:
+                                desc = await mcp_client.call_tool(
+                                    "describe_table",
+                                    {"table": f"{t['namespace']}.{t['name']}"},
+                                )
+                                session.schema_cache[cache_key] = desc
+
+                        content = await fuzzy_column_search(
+                            req.message,
+                            known_tables,
+                            session.schema_cache,
+                            llm_client,
+                            model,
+                        )
+                        yield _sse({"type": "result", "content": content})
+                    except Exception as e:
+                        logger.warning("LLM fallback search failed: %s", e)
+                        yield _sse({
+                            "type": "result",
+                            "content": schema_context,
+                        })
+
                 yield _sse({"type": "done"})
                 return
 
@@ -128,9 +240,22 @@ async def chat(req: ChatRequest):
                             "content": f"Found {row_count} features. Layer added to map.",
                         })
                     else:
+                        rows = result.get("rows", [])
+                        if rows and row_count <= 20:
+                            # Format small result sets as a readable table
+                            lines = []
+                            keys = list(rows[0].keys())
+                            lines.append("| " + " | ".join(keys) + " |")
+                            lines.append("| " + " | ".join("---" for _ in keys) + " |")
+                            for row in rows:
+                                vals = [str(row.get(k, "")) for k in keys]
+                                lines.append("| " + " | ".join(vals) + " |")
+                            content = "\n".join(lines)
+                        else:
+                            content = f"Query returned {row_count} rows."
                         yield _sse({
                             "type": "result",
-                            "content": f"Query returned {row_count} rows.",
+                            "content": content,
                         })
                 else:
                     yield _sse(event)

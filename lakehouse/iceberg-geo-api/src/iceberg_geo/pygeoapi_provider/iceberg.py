@@ -9,16 +9,27 @@ This provider translates pygeoapi's query interface into calls
 to the shared Iceberg Query Service.
 """
 
+import json
 import logging
+import uuid
 
 from pygeoapi.provider.base import BaseProvider, ProviderQueryError
 
-from iceberg_geo.query.catalog import get_table
+from iceberg_geo.query.catalog import get_connection, get_table
 from iceberg_geo.query.engine import get_table_schema, query_features
-from iceberg_geo.query.geometry import wkb_to_geojson
 from iceberg_geo.query.models import QueryParams
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _geojson_expr(geom_col: str, reg_name: str, conn) -> str:
+    """Build ST_AsGeoJSON expression, casting BLOB to GEOMETRY if needed."""
+    col_type = conn.execute(
+        f"SELECT typeof(\"{geom_col}\") FROM {reg_name} LIMIT 1"
+    ).fetchone()[0].upper()
+    if "GEOMETRY" in col_type:
+        return f'ST_AsGeoJSON("{geom_col}")'
+    return f'ST_AsGeoJSON(ST_GeomFromWKB("{geom_col}"))'
 
 
 class IcebergProvider(BaseProvider):
@@ -158,36 +169,57 @@ class IcebergProvider(BaseProvider):
         """
         Convert Arrow table to list of GeoJSON Feature dicts.
 
-        For each row:
-        1. Extract all non-geometry columns as properties
-        2. Decode WKB geometry column to GeoJSON geometry via Shapely
-        3. Build Feature dict with id from id_field
+        Uses DuckDB's ST_AsGeoJSON() for geometry conversion instead of
+        Shapely, avoiding the WKB → Python object → GeoJSON round-trip.
         """
         if arrow_table is None or arrow_table.num_rows == 0:
             return []
 
-        features = []
         id_field = self._schema.id_field
-        table_dict = arrow_table.to_pydict()
-        num_rows = arrow_table.num_rows
+        col_names = arrow_table.column_names
+        non_geom_cols = [c for c in col_names if c != geom_col]
 
-        for i in range(num_rows):
-            properties = {}
-            geometry = None
-
-            for col_name in table_dict:
-                if col_name == geom_col:
-                    if not skip_geometry:
-                        wkb_bytes = table_dict[col_name][i]
-                        if wkb_bytes:
-                            geometry = wkb_to_geojson(wkb_bytes)
+        conn = get_connection()
+        reg_name = f"__pygeo_{uuid.uuid4().hex[:8]}"
+        conn.register(reg_name, arrow_table)
+        try:
+            non_geom_select = ", ".join(f'"{c}"' for c in non_geom_cols)
+            if not skip_geometry and geom_col in col_names:
+                geojson_sql = _geojson_expr(geom_col, reg_name, conn)
+                if non_geom_select:
+                    sql = (
+                        f'SELECT {non_geom_select}, '
+                        f'{geojson_sql} AS __geojson '
+                        f'FROM {reg_name}'
+                    )
                 else:
-                    val = table_dict[col_name][i]
-                    properties[col_name] = _to_json_safe(val)
+                    sql = (
+                        f'SELECT {geojson_sql} AS __geojson '
+                        f'FROM {reg_name}'
+                    )
+            else:
+                sql = f'SELECT {non_geom_select} FROM {reg_name}'
+
+            rows = conn.execute(sql).fetchall()
+            desc = conn.execute(sql).description
+        finally:
+            conn.unregister(reg_name)
+
+        col_map = [d[0] for d in desc]
+
+        features = []
+        for i, row in enumerate(rows):
+            row_dict = dict(zip(col_map, row))
+            geojson_str = row_dict.pop("__geojson", None)
+            geometry = json.loads(geojson_str) if geojson_str else None
+            properties = {k: _to_json_safe(v) for k, v in row_dict.items()}
+
+            # Get ID from the id_field if present
+            fid = properties.get(id_field, i)
 
             feature = {
                 "type": "Feature",
-                "id": str(table_dict.get(id_field, list(range(num_rows)))[i]),
+                "id": str(fid),
                 "geometry": geometry,
                 "properties": properties,
             }

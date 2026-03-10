@@ -6,6 +6,9 @@ Rules:
 - DuckDB spatial functions: ST_Intersects, ST_DWithin, ST_Buffer, ST_Distance,
   ST_Contains, ST_Area, ST_Length, ST_Centroid, ST_Extent, ST_GeomFromText,
   ST_Point, ST_Transform, ST_Union, ST_Intersection
+- Use lambda syntax: lambda x: x + 1 (NOT the deprecated arrow syntax x -> x + 1)
+- Geometry columns in the lakehouse catalog are native GEOMETRY type. Use them
+  directly in spatial functions — no ST_GeomFromWKB() wrapper needed.
 - Geometry columns typically named "geom" or "geometry"
 - Always include geometry column in SELECT for map visualization
 - Use ST_DWithin(a, b, distance_meters) for proximity queries

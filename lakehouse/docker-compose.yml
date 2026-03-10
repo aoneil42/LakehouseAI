@@ -144,7 +144,7 @@ services:
   #   Usage: docker compose exec duckdb /duckdb -init /config/init.sql
   #   Credentials templated at startup by duckdb-entrypoint.sh
   duckdb:
-    image: datacatering/duckdb:v1.4.4
+    image: datacatering/duckdb:v1.5.0
     container_name: duckdb
     entrypoint: ["/bin/sh", "/config/entrypoint.sh"]
     environment:
