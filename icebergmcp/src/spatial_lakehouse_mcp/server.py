@@ -386,12 +386,14 @@ def get_bbox(
         else:
             where_clause = ""
 
+        geom_expr = f"ST_GeomFromWKB({geom_col})"
         sql = (
             f"SELECT "
-            f"  ST_XMin(ext) AS min_lon, ST_YMin(ext) AS min_lat, "
-            f"  ST_XMax(ext) AS max_lon, ST_YMax(ext) AS max_lat "
-            f"FROM (SELECT ST_Extent({geom_col}) AS ext "
-            f"      FROM {qualified} {where_clause}) sub"
+            f"  MIN(ST_XMin({geom_expr})) AS min_lon, "
+            f"  MIN(ST_YMin({geom_expr})) AS min_lat, "
+            f"  MAX(ST_XMax({geom_expr})) AS max_lon, "
+            f"  MAX(ST_YMax({geom_expr})) AS max_lat "
+            f"FROM {qualified} {where_clause}"
         )
 
         rows = execute_query(sql)
@@ -728,7 +730,7 @@ def sample_data(
                 if is_geom:
                     if not include_geometry:
                         continue
-                    col_parts.append(f'ST_AsGeoJSON({col_name}) AS {col_name}')
+                    col_parts.append(f'ST_AsGeoJSON(ST_GeomFromWKB({col_name})) AS {col_name}')
                 else:
                     col_parts.append(col_name)
             col_clause = ", ".join(col_parts) if col_parts else "*"
@@ -778,15 +780,16 @@ def table_stats(
 
         # Spatial stats (best-effort — skip if geometry column doesn't exist)
         try:
+            geom_expr = f"ST_GeomFromWKB({geom_col})"
             spatial = execute_query(f"""
                 SELECT
                     COUNT(*)::INTEGER AS total_rows,
                     COUNT({geom_col})::INTEGER AS non_null_geom,
                     (COUNT(*) - COUNT({geom_col}))::INTEGER AS null_geom,
-                    ST_XMin(ST_Extent({geom_col})) AS min_lon,
-                    ST_YMin(ST_Extent({geom_col})) AS min_lat,
-                    ST_XMax(ST_Extent({geom_col})) AS max_lon,
-                    ST_YMax(ST_Extent({geom_col})) AS max_lat
+                    MIN(ST_XMin({geom_expr})) AS min_lon,
+                    MIN(ST_YMin({geom_expr})) AS min_lat,
+                    MAX(ST_XMax({geom_expr})) AS max_lon,
+                    MAX(ST_YMax({geom_expr})) AS max_lat
                 FROM {qualified}
             """)
             if spatial:
@@ -794,7 +797,7 @@ def table_stats(
 
             # Geometry types
             geom_types = execute_query(f"""
-                SELECT ST_GeometryType({geom_col}) AS geom_type,
+                SELECT ST_GeometryType({geom_expr}) AS geom_type,
                        COUNT(*)::INTEGER AS cnt
                 FROM {qualified}
                 WHERE {geom_col} IS NOT NULL

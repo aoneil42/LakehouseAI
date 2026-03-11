@@ -1,6 +1,7 @@
 import logging
 import time
 
+from ..config import settings
 from ..session import SessionState
 
 logger = logging.getLogger(__name__)
@@ -21,27 +22,37 @@ class SchemaBuilder:
 
     async def build_context(self, message: str, session: SessionState) -> str:
         now = time.time()
-        tables = await self._get_tables(session, now)
+        all_tables = await self._get_tables(session, now)
+        # Exclude scratch/temp tables from LLM context
+        tables = [
+            t for t in all_tables
+            if not t["namespace"].startswith(settings.scratch_prefix)
+        ]
         if not tables:
             return "No tables available."
 
         matched = self._match_tables(message, tables)
         if not matched:
-            matched = tables  # fall back to all tables
+            matched = tables  # fall back to all non-scratch tables
 
         lines = ["Available tables:"]
         for table_info in matched:
             full_name = table_info["full_name"]
             desc = await self._describe(full_name, session, now)
             if desc:
+                # MCP returns rows with column_name/column_type keys
+                columns = desc.get("rows", desc.get("columns", []))
                 cols = ", ".join(
-                    f"{c['name']} {c['type']}" for c in desc.get("columns", [])
+                    f"{c.get('column_name', c.get('name', '?'))} "
+                    f"{c.get('column_type', c.get('type', '?'))}"
+                    for c in columns
                 )
                 line = f"  {full_name} ({cols})"
                 geom_cols = [
-                    c["name"]
-                    for c in desc.get("columns", [])
-                    if "geom" in c.get("type", "").lower()
+                    c.get("column_name", c.get("name", ""))
+                    for c in columns
+                    if c.get("is_geometry")
+                    or "geom" in c.get("column_type", c.get("type", "")).lower()
                 ]
                 if geom_cols:
                     bbox = await self._get_bbox(full_name)

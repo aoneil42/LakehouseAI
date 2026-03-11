@@ -17,7 +17,11 @@ from .planner.schema import SchemaBuilder
 from .planner.sql_gen import extract_sql, validate_sql, generate_sql
 from .router.intent import classify
 from .router.llm_search import fuzzy_column_search, fuzzy_table_search
-from .router.tool_router import match as match_tool, format_result as format_tool_result
+from .router.tool_router import (
+    match as match_tool,
+    format_result as format_tool_result,
+    _format_geometry_types_multi,
+)
 from .session import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -131,6 +135,21 @@ async def chat(req: ChatRequest):
                                 route.tool_name, result
                             ),
                         })
+                elif route and route.tool_name == "table_stats_multi":
+                    # Multi-table aggregation (e.g. geometry types across namespace)
+                    tables = route.arguments.get("tables", [])
+                    yield _sse({
+                        "type": "status",
+                        "content": f"Querying {len(tables)} tables...",
+                    })
+                    results = []
+                    for tbl in tables:
+                        r = await mcp_client.call_tool("table_stats", {"table": tbl})
+                        results.append((tbl, r))
+                    yield _sse({
+                        "type": "result",
+                        "content": _format_geometry_types_multi(results),
+                    })
                 elif route:
                     yield _sse({
                         "type": "status",
@@ -141,7 +160,9 @@ async def chat(req: ChatRequest):
                     )
                     yield _sse({
                         "type": "result",
-                        "content": format_tool_result(route.tool_name, result),
+                        "content": format_tool_result(
+                            route.tool_name, result, route.format_hint
+                        ),
                     })
                 else:
                     # No tool match — use LLM fuzzy search as fallback
@@ -200,6 +221,7 @@ async def chat(req: ChatRequest):
             yield _sse({"type": "status", "content": "Generating SQL..."})
 
             should_materialize = intent == "spatial"
+            print(f"[DEBUG] Schema context for {intent}:\n{schema_context[:2000]}", flush=True)
 
             async def gen_fn(msg, ctx, error=None, failed_sql=None):
                 if error and failed_sql:
@@ -211,6 +233,7 @@ async def chat(req: ChatRequest):
                 response = await llm_client.generate(msgs, model)
                 sql = extract_sql(response)
                 validate_sql(sql)
+                print(f"[DEBUG] Generated SQL: {sql}", flush=True)
                 return sql
 
             async def exec_fn(sql):

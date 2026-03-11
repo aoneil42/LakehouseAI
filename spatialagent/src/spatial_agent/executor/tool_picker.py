@@ -6,15 +6,21 @@ def generate_result_name(sql: str) -> str:
     match = re.search(r"(?i)\bFROM\s+\S*\.(\w+)", sql)
     table = match.group(1) if match else "result"
 
-    # Detect operation hints
+    # Detect operation hints (most specific first)
     if re.search(r"(?i)\bST_DWithin\b", sql):
         return f"{table}_nearby"
+    if re.search(r"(?i)\bST_Union_Agg\b", sql):
+        return f"{table}_dissolved"
     if re.search(r"(?i)\bST_Buffer\b", sql):
         return f"{table}_buffered"
+    if re.search(r"(?i)\bGROUP\s+BY\b", sql):
+        return f"{table}_aggregated"
     if re.search(r"(?i)\bST_Intersects\b", sql):
         return f"{table}_intersected"
     if re.search(r"(?i)\bST_Contains\b", sql):
         return f"{table}_contained"
+    if re.search(r"(?i)\bST_Distance\b", sql):
+        return f"{table}_distance"
     if re.search(r"(?i)\bJOIN\b", sql):
         return f"{table}_joined"
 

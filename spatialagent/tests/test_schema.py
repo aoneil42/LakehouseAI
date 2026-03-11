@@ -14,29 +14,31 @@ def mock_mcp():
     async def call_tool(name, args):
         if name == "list_tables":
             return {
-                "namespaces": [
-                    {"namespace": "default", "tables": ["buildings", "roads", "rivers"]}
+                "rows": [
+                    {"schema_name": "default", "table_name": "buildings"},
+                    {"schema_name": "default", "table_name": "roads"},
+                    {"schema_name": "default", "table_name": "rivers"},
                 ]
             }
         elif name == "describe_table":
             table = args.get("table", "")
             if "buildings" in table:
                 return {
-                    "columns": [
-                        {"name": "id", "type": "INTEGER"},
-                        {"name": "name", "type": "VARCHAR"},
-                        {"name": "geom", "type": "GEOMETRY"},
+                    "rows": [
+                        {"column_name": "id", "column_type": "INTEGER"},
+                        {"column_name": "name", "column_type": "VARCHAR"},
+                        {"column_name": "geom", "column_type": "GEOMETRY", "is_geometry": True},
                     ]
                 }
             elif "roads" in table:
                 return {
-                    "columns": [
-                        {"name": "id", "type": "INTEGER"},
-                        {"name": "type", "type": "VARCHAR"},
-                        {"name": "geom", "type": "GEOMETRY"},
+                    "rows": [
+                        {"column_name": "id", "column_type": "INTEGER"},
+                        {"column_name": "type", "column_type": "VARCHAR"},
+                        {"column_name": "geom", "column_type": "GEOMETRY", "is_geometry": True},
                     ]
                 }
-            return {"columns": [{"name": "id", "type": "INTEGER"}]}
+            return {"rows": [{"column_name": "id", "column_type": "INTEGER"}]}
         elif name == "get_bbox":
             return {"bbox": [-77.5, 38.8, -77.0, 39.0]}
         return {}

@@ -5,6 +5,10 @@ Rules:
 - Standard SQL aggregations: COUNT, SUM, AVG, MIN, MAX, GROUP BY
 - Use lambda syntax: lambda x: x + 1 (NOT the deprecated arrow syntax x -> x + 1)
 - Use standard DuckDB functions and syntax
+- Use ONLY column names listed in the schema below. Use SELECT * when unsure.
+- When filtering by feature type (hotels, restaurants, parks, etc.), prefer
+  categorical columns (basic_category, class, subtype, type, category) over
+  searching in names. Example: WHERE basic_category = 'hotel' NOT names LIKE '%hotel%'
 - NEVER query information_schema — use only the tables listed below
 - Return ONLY the SQL query, no explanation
 

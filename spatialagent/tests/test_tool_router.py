@@ -114,6 +114,71 @@ def test_table_search(msg, expected_pattern, known_tables):
     assert route.arguments == {"pattern": expected_pattern}
 
 
+# ── Q8/Q11: sample_data ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_args", [
+    ("Show me a sample of the buildings data", {"table": "default.buildings"}),
+    ("Preview the first 5 rows of roads", {"table": "default.roads", "n": 5}),
+    ("Give me a sample of the parcels table", {"table": "default.parcels"}),
+    (
+        "Preview the first 10 rows of the buildings data without the geometry",
+        {"table": "default.buildings", "n": 10, "include_geometry": False},
+    ),
+])
+def test_sample_data(msg, expected_args, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "sample_data"
+    assert route.arguments == expected_args
+
+
+# ── Q9/Q10/Q12: table_stats ────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_table", [
+    ("How many records are in the zones table?", "default.zones"),
+    ("Summarize the buildings dataset", "default.buildings"),
+    ("Row count for parcels", "default.parcels"),
+])
+def test_table_stats(msg, expected_table, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "table_stats"
+    assert route.arguments == {"table": expected_table}
+    assert route.format_hint == ""
+
+
+# ── Q12: geometry_types ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_table", [
+    ("What types of geometries are in the roads table?", "default.roads"),
+    ("What kind of geometries are in the buildings dataset?", "default.buildings"),
+])
+def test_geometry_types(msg, expected_table, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "table_stats"
+    assert route.arguments == {"table": expected_table}
+    assert route.format_hint == "geometry_types"
+
+
+# ── Q13/Q14: get_bbox ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_table", [
+    ("What geographic area does the parcels table cover?", "default.parcels"),
+    ("Give me the bounding box of buildings", "default.buildings"),
+    ("What is the spatial extent of the zones dataset?", "default.zones"),
+])
+def test_get_bbox(msg, expected_table, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "get_bbox"
+    assert route.arguments == {"table": expected_table}
+
+
 # ── Fallback ─────────────────────────────────────────────────────
 
 
@@ -202,3 +267,111 @@ def test_format_empty_tables():
     result = {"rows": []}
     text = format_result("list_tables", result)
     assert "No tables found" in text
+
+
+def test_format_sample_data():
+    result = {
+        "rows": [
+            {"id": 1, "name": "test", "geometry": b"\x01\x02\x00"},
+        ],
+    }
+    text = format_result("sample_data", result)
+    assert "(geometry)" in text
+    assert "test" in text
+    assert "1 row(s)" in text
+
+
+def test_format_table_stats():
+    result = {
+        "row_count": 1000,
+        "column_count": 8,
+        "columns": [
+            {"name": "id", "type": "INTEGER"},
+            {"name": "geometry", "type": "BLOB"},
+        ],
+        "spatial": {
+            "total_rows": 1000,
+            "non_null_geom": 995,
+            "null_geom": 5,
+            "min_lon": 2.33,
+            "min_lat": 48.85,
+            "max_lon": 2.34,
+            "max_lat": 48.86,
+        },
+        "geometry_types": [
+            {"geom_type": "POLYGON", "cnt": 900},
+            {"geom_type": "MULTIPOLYGON", "cnt": 95},
+        ],
+    }
+    text = format_result("table_stats", result)
+    assert "1,000" in text
+    assert "POLYGON" in text
+    assert "Bounding box:" in text
+    assert "48.85" in text
+    assert "995" in text
+    assert "5" in text  # null count
+
+
+def test_format_geometry_types_hint():
+    result = {
+        "row_count": 5000,
+        "column_count": 10,
+        "geometry_types": [
+            {"geom_type": "POINT", "cnt": 4500},
+            {"geom_type": "MULTIPOINT", "cnt": 500},
+        ],
+        "spatial": {"min_lon": 1.0, "min_lat": 2.0, "max_lon": 3.0, "max_lat": 4.0,
+                     "non_null_geom": 5000, "null_geom": 0},
+    }
+    text = format_result("table_stats", result, format_hint="geometry_types")
+    assert "POINT" in text
+    assert "4,500" in text
+    # Should NOT include full stats
+    assert "Row count" not in text
+    assert "Column count" not in text
+    assert "Bounding box" not in text
+
+
+def test_format_get_bbox():
+    result = {
+        "min_lon": -105.5,
+        "min_lat": 39.5,
+        "max_lon": -104.5,
+        "max_lat": 40.5,
+    }
+    text = format_result("get_bbox", result)
+    assert "[-105.5, 39.5, -104.5, 40.5]" in text
+
+
+# ── Tier 2: spatial aggregation should NOT match meta ────────────
+
+
+@pytest.mark.parametrize("msg", [
+    "How many buildings are in each zone?",
+    "What is the average building height per zone?",
+    "Count buildings taller than 20m in each zone",
+])
+def test_spatial_aggregation_not_meta(msg, known_tables):
+    """Spatial aggregation queries should not route through meta tool router."""
+    route = match(msg, known_tables)
+    assert route is None or route.tool_name not in ("table_stats", "sample_data")
+
+
+# ── tool_picker result naming ────────────────────────────────────
+
+from spatial_agent.executor.tool_picker import generate_result_name
+
+
+def test_result_name_dissolved():
+    sql = "SELECT ST_Union_Agg(ST_Buffer(ST_Transform(...))) FROM lakehouse.default.places WHERE type = 'medical'"
+    assert generate_result_name(sql) == "places_dissolved"
+
+
+def test_result_name_aggregated():
+    sql = "SELECT z.id, COUNT(b.*) FROM lakehouse.default.zones z LEFT JOIN lakehouse.default.buildings b ON ST_Contains(...) GROUP BY z.id"
+    assert generate_result_name(sql) == "zones_aggregated"
+
+
+def test_result_name_distance():
+    sql = "SELECT ST_Distance(ST_GeomFromWKB(a.geometry), ST_GeomFromWKB(b.geometry)) FROM lakehouse.default.buildings a"
+    assert generate_result_name(sql) == "buildings_distance"

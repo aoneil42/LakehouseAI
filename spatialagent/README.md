@@ -73,7 +73,7 @@ The agent classifies each query into one of four intents and routes accordingly:
 | Intent | Route | LLM Used? | Description |
 |--------|-------|-----------|-------------|
 | **meta** | Tool Router → MCP tools | Only for fuzzy search | Discovery queries ("what tables exist?", "describe buildings schema") |
-| **spatial** | Planner → SQL → MCP `materialize_result` | Yes | Spatial queries that produce map layers |
+| **spatial** | Planner → SQL → MCP `materialize_result` | Yes | Spatial queries that produce map layers (proximity, spatial joins, buffers, aggregation) |
 | **analytics** | Planner → SQL → MCP `query` | Yes | Aggregation, counts, statistics — results shown as tables |
 | **conversational** | Direct reply | No | Greetings, help requests |
 
@@ -91,6 +91,27 @@ Discovery queries bypass the LLM SQL pipeline entirely. A rule-based tool router
 | Find tables by topic | `search_tables` | "Find tables related to transportation" |
 
 When the tool router has no confident match, or for semantic search queries, the agent falls back to **LLM fuzzy search** — using the LLM to semantically match against the cached table catalog.
+
+### Spatial SQL Generation
+
+For spatial and analytics intents, the agent generates DuckDB SQL via few-shot prompting. The system prompt includes chain-of-thought examples covering:
+
+| Category | Examples |
+|----------|----------|
+| **Proximity / Nearest** | K-nearest neighbor, closest X to named Y, distance between features |
+| **Spatial Joins** | Point-in-polygon (ST_Contains), line-polygon intersection (ST_Intersects), distance-based joins (ST_DWithin) |
+| **Buffer Analysis** | Meter-accurate buffers via CRS transform, dissolved buffers (ST_Union_Agg) |
+| **Spatial Aggregation** | COUNT/SUM/AVG with spatial GROUP BY, filtered aggregation |
+
+Key prompt rules ensure correct SQL:
+- Geometry columns are WKB BLOBs — must wrap with `ST_GeomFromWKB()` in spatial functions
+- Distances in EPSG:4326 are in degrees — convert meters via `/ 111320.0`
+- Column names come from schema context, not from examples
+- VARCHAR columns use simple equality; STRUCT/JSON columns use `::JSON->>'key'`
+
+### Schema Context
+
+The `SchemaBuilder` discovers available tables and columns via MCP `list_tables` + `describe_table`, then injects this context into the LLM prompt. Scratch tables (from previous agent sessions) are automatically filtered out to keep the prompt focused.
 
 ## Quick Start
 
