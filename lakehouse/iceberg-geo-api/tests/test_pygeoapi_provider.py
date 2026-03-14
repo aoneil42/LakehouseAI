@@ -4,7 +4,7 @@ import pytest
 
 
 @pytest.fixture
-def points_provider(iceberg_catalog):
+def points_provider(test_connection):
     """Create an IcebergProvider for the test points table."""
     from iceberg_geo.pygeoapi_provider.iceberg import IcebergProvider
 
@@ -21,7 +21,7 @@ def points_provider(iceberg_catalog):
 
 
 @pytest.fixture
-def polygons_provider(iceberg_catalog):
+def polygons_provider(test_connection):
     """Create an IcebergProvider for the test polygons table."""
     from iceberg_geo.pygeoapi_provider.iceberg import IcebergProvider
 

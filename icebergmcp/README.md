@@ -2,7 +2,7 @@
 
 Iceberg-native geospatial MCP server powered by DuckDB. Part of the [LakehouseAI](../README.md) monorepo.
 
-Provides 18 tools for catalog discovery, spatial queries, analysis, and data management over an Apache Iceberg lakehouse. An LLM agent connects via the Model Context Protocol (MCP) and can explore schemas, run spatial SQL, perform point-in-polygon aggregation, export GeoJSON, and more — all through a single DuckDB connection.
+Provides 19 tools for catalog discovery, spatial queries, analysis, and data management over an Apache Iceberg lakehouse. An LLM agent connects via the Model Context Protocol (MCP) and can explore schemas, run spatial SQL, perform point-in-polygon aggregation, export GeoJSON, and more — all through a single DuckDB connection.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ DuckDB (in-process, :memory:)
     └── spatial extension  → ST_* geospatial functions
 ```
 
-**Key design decision:** DuckDB v1.4+ natively supports `ATTACH` to Iceberg REST Catalogs. Once attached, the catalog appears as a regular DuckDB database — `SHOW ALL TABLES`, `DESCRIBE`, `iceberg_snapshots()`, time travel, and full SQL (including spatial functions) all work through a single connection. No pyiceberg dependency.
+**Key design decision:** DuckDB v1.5 natively supports `ATTACH` to Iceberg REST Catalogs. Once attached, the catalog appears as a regular DuckDB database — `SHOW ALL TABLES`, `DESCRIBE`, `iceberg_snapshots()`, time travel, and full SQL (including spatial functions) all work through a single connection. No pyiceberg dependency.
 
 ### Infrastructure Stack
 
@@ -28,13 +28,13 @@ DuckDB (in-process, :memory:)
 | Catalog Metadata | PostgreSQL | 5432 |
 | MCP Server | This project (FastMCP + DuckDB) | 8082 |
 
-## Tools (18 total)
+## Tools (19 total)
 
 ### Catalog Discovery
 | Tool | Description |
 |------|-------------|
 | `list_namespaces` | List schemas in the Iceberg catalog |
-| `list_tables` | List tables, optionally filtered by namespace |
+| `list_tables` | List tables with accurate column counts, optionally filtered by namespace |
 | `describe_table` | Column names, types, geometry detection |
 | `table_snapshots` | Snapshot history for time-travel queries |
 | `search_tables` | Search tables by name, column, or geometry presence |
@@ -62,6 +62,7 @@ DuckDB (in-process, :memory:)
 | `sample_data` | Preview rows from a table |
 | `table_stats` | Row counts, column stats, geometry summary |
 | `export_geojson` | Export as GeoJSON FeatureCollection |
+| `materialize_result` | Write query results to a scratch Iceberg table for map display (auto-converts GEOMETRY → WKB) |
 
 ### System
 | Tool | Description |
@@ -79,7 +80,7 @@ icebergmcp/
 ├── src/
 │   └── spatial_lakehouse_mcp/
 │       ├── __init__.py
-│       ├── server.py              # FastMCP server + 18 tool definitions
+│       ├── server.py              # FastMCP server + 19 tool definitions
 │       ├── config.py              # Pydantic settings (SLM_ env prefix)
 │       ├── engine.py              # DuckDB connection + catalog attachment
 │       └── validators.py          # SQL safety + input validation
@@ -223,6 +224,10 @@ All environment variables use the `SLM_` prefix (Spatial Lakehouse MCP), except 
 ### ACCESS_DELEGATION_MODE
 
 When running the MCP server **outside Docker** (on the host), the `ATTACH` statement uses `ACCESS_DELEGATION_MODE 'none'`. This bypasses LakeKeeper's remote signing, which otherwise returns S3 URLs containing Docker-internal hostnames (e.g., `garage:3900` instead of `localhost:3900`). The server's local S3 secret provides the correct host-accessible endpoint.
+
+### GEOMETRY Auto-Conversion
+
+`materialize_result` automatically detects DuckDB `GEOMETRY`-typed columns in query results and wraps them with `ST_AsWKB()` before writing to Iceberg. This is necessary because Iceberg does not support native DuckDB GEOMETRY — only WKB BLOBs. The conversion is transparent: buffer analysis, spatial transforms, and other queries that produce GEOMETRY columns all materialize correctly without manual casting.
 
 ### SQL Safety
 

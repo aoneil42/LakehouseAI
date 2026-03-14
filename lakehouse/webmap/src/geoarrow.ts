@@ -26,10 +26,26 @@ function ensureWasm(): Promise<void> {
   return wasmReady;
 }
 
-export async function loadGeoParquet(url: string): Promise<Table> {
-  await ensureWasm();
+/**
+ * Load geometry data from a URL. Detects the response content-type:
+ * - Arrow IPC stream → tableFromIPC() directly (no WASM overhead)
+ * - GeoParquet → WASM decode path (fallback)
+ */
+export async function loadGeoData(url: string): Promise<Table> {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
+
+  const contentType = resp.headers.get("content-type") || "";
+
+  // Arrow IPC fast path — DuckDB 1.5 natively produces geoarrow.wkb
+  // extension arrays, so geometry metadata propagates without WASM decoding.
+  if (contentType.includes("application/vnd.apache.arrow.stream")) {
+    const buffer = await resp.arrayBuffer();
+    return tableFromIPC(new Uint8Array(buffer));
+  }
+
+  // GeoParquet fallback — requires WASM decode
+  await ensureWasm();
   const buffer = await resp.arrayBuffer();
 
   if (buffer.byteLength > MAX_RESPONSE_BYTES) {
@@ -55,3 +71,6 @@ export async function loadGeoParquet(url: string): Promise<Table> {
     throw e;
   }
 }
+
+/** @deprecated Use loadGeoData instead */
+export const loadGeoParquet = loadGeoData;

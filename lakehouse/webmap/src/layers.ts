@@ -14,6 +14,12 @@ import {
 import type { Table } from "apache-arrow";
 import type { Layer, Color, PickingInfo } from "@deck.gl/core";
 import type { LayerStyle } from "./symbology";
+import {
+  detectWkbGeomType,
+  parseWkbPoints,
+  parseWkbLines,
+  parseWkbPolygons,
+} from "./wkb";
 
 // ---------------------------------------------------------------------------
 // Geometry type detection from Arrow/GeoArrow metadata
@@ -24,6 +30,10 @@ export type GeomType = "point" | "line" | "polygon" | "unknown";
 /**
  * Detect the geometry type from GeoArrow extension metadata on the geometry
  * column. Returns "point", "line", "polygon", or "unknown".
+ *
+ * For native GeoArrow types the extension name encodes the geometry type
+ * (e.g. "geoarrow.point", "geoarrow.linestring").  For WKB-encoded columns
+ * ("geoarrow.wkb") we peek at the first WKB value to determine the type.
  */
 export function detectGeomType(table: Table): GeomType {
   const geomField = table.schema.fields.find((f) => f.name === "geometry");
@@ -35,7 +45,23 @@ export function detectGeomType(table: Table): GeomType {
   if (extName.includes("point")) return "point";
   if (extName.includes("linestring")) return "line";
   if (extName.includes("polygon")) return "polygon";
+
+  // WKB-encoded geometry — inspect actual bytes to determine type
+  if (extName === "geoarrow.wkb" || extName === "") {
+    const geomCol = table.getChild("geometry");
+    if (geomCol) return detectWkbGeomType(geomCol);
+  }
+
   return "unknown";
+}
+
+/** Check if the geometry column is WKB-encoded (Binary type). */
+function isWkbGeometry(table: Table): boolean {
+  const geomField = table.schema.fields.find((f) => f.name === "geometry");
+  if (!geomField) return false;
+  const extName =
+    geomField.metadata.get("ARROW:extension:name")?.toLowerCase() ?? "";
+  return extName === "geoarrow.wkb" || (extName === "" && DataType.isBinary(geomField.type));
 }
 
 // ---------------------------------------------------------------------------
@@ -180,11 +206,22 @@ export function buildPointLayer(
   style?: LayerStyle
 ): Layer {
   const geomCol = table.getChild("geometry")!;
-  const batch = geomCol.data[0];
 
-  // FixedSizeList[2]<Float64> → children[0].values
-  const coordValues = batch.children[0].values as Float64Array;
-  const numPoints = batch.length;
+  let coordValues: Float64Array;
+  let numPoints: number;
+
+  if (isWkbGeometry(table)) {
+    const parsed = parseWkbPoints(geomCol);
+    coordValues = parsed.coords;
+    numPoints = parsed.numPoints;
+  } else {
+    // Native GeoArrow: FixedSizeList[2]<Float64> → children[0].values
+    const batch = geomCol.data[0];
+    coordValues = batch.children[0].values as Float64Array;
+    numPoints = batch.length;
+  }
+
+  const radiusPx = style?.radius ?? 5;
 
   return new ScatterplotLayer({
     id,
@@ -198,11 +235,12 @@ export function buildPointLayer(
     opacity: style?.opacity ?? opacity,
     getFillColor: style?.fillColor ?? DEFAULT_COLOR,
     getLineColor: style?.strokeColor,
-    getRadius: style?.radius ?? 300,
+    radiusUnits: "pixels" as const,
+    getRadius: radiusPx,
     lineWidthMinPixels: style?.strokeWidth ?? 1,
     stroked: true,
-    radiusMinPixels: 3,
-    radiusMaxPixels: 15,
+    radiusMinPixels: 1,
+    radiusMaxPixels: 50,
     pickable: true,
     onClick: makePickHandler(table, onClick, id),
   });
@@ -225,12 +263,26 @@ export function buildLineLayer(
   style?: LayerStyle
 ): Layer {
   const geomCol = table.getChild("geometry")!;
-  const batch = geomCol.data[0];
 
-  const pathOffsets = batch.valueOffsets; // Int32Array: path → coord index
-  const pointData = batch.children[0]; // FixedSizeList[2]<Float64>
-  const coordValues = pointData.children[0].values as Float64Array;
-  const numPaths = batch.length;
+  let pathOffsets: Int32Array;
+  let coordValues: Float64Array;
+  let numPaths: number;
+
+  if (isWkbGeometry(table)) {
+    const parsed = parseWkbLines(geomCol);
+    pathOffsets = parsed.pathOffsets;
+    coordValues = parsed.coords;
+    numPaths = parsed.numPaths;
+  } else {
+    // Native GeoArrow: List<FixedSizeList[2]<Float64>>
+    const batch = geomCol.data[0];
+    pathOffsets = batch.valueOffsets;
+    const pointData = batch.children[0];
+    coordValues = pointData.children[0].values as Float64Array;
+    numPaths = batch.length;
+  }
+
+  const widthPx = style?.strokeWidth ?? 2;
 
   return new PathLayer({
     id,
@@ -244,9 +296,10 @@ export function buildLineLayer(
     visible,
     opacity: style?.opacity ?? opacity,
     getColor: style?.fillColor ?? DEFAULT_LINE_COLOR,
-    getWidth: style?.strokeWidth ?? 2,
+    getWidth: widthPx,
+    widthUnits: "pixels" as const,
     widthMinPixels: 1,
-    widthMaxPixels: 10,
+    widthMaxPixels: 50,
     pickable: true,
     onClick: makePickHandler(table, onClick, id),
   });
@@ -283,22 +336,36 @@ export function buildPolygonLayer(
   style?: LayerStyle
 ): Layer {
   const geomCol = table.getChild("geometry")!;
-  const batch = geomCol.data[0];
 
-  // Navigate the nested List structure
-  const polygonOffsets = batch.valueOffsets; // polygon → ring index
-  const ringData = batch.children[0]; // List<FixedSizeList[2]<Float64>>
-  const ringOffsets = ringData.valueOffsets; // ring → coord index
-  const pointData = ringData.children[0]; // FixedSizeList[2]<Float64>
-  const coordValues = pointData.children[0].values as Float64Array;
-  const numPolygons = batch.length;
+  let polygonOffsets: Int32Array;
+  let ringOffsets: Int32Array;
+  let coordValues: Float64Array;
+  let numPolygons: number;
+  let hasHoles: boolean;
 
-  // Check if ANY polygon has more than one ring (i.e. has holes)
-  let hasHoles = false;
-  for (let i = 0; i < numPolygons; i++) {
-    if (polygonOffsets[i + 1] - polygonOffsets[i] > 1) {
-      hasHoles = true;
-      break;
+  if (isWkbGeometry(table)) {
+    const parsed = parseWkbPolygons(geomCol);
+    polygonOffsets = parsed.polygonOffsets;
+    ringOffsets = parsed.ringOffsets;
+    coordValues = parsed.coords;
+    numPolygons = parsed.numPolygons;
+    hasHoles = parsed.hasHoles;
+  } else {
+    // Native GeoArrow: List<List<FixedSizeList[2]<Float64>>>
+    const batch = geomCol.data[0];
+    polygonOffsets = batch.valueOffsets;
+    const ringData = batch.children[0];
+    ringOffsets = ringData.valueOffsets;
+    const pointData = ringData.children[0];
+    coordValues = pointData.children[0].values as Float64Array;
+    numPolygons = batch.length;
+
+    hasHoles = false;
+    for (let i = 0; i < numPolygons; i++) {
+      if (polygonOffsets[i + 1] - polygonOffsets[i] > 1) {
+        hasHoles = true;
+        break;
+      }
     }
   }
 
@@ -327,8 +394,6 @@ export function buildPolygonLayer(
   }
 
   // ── Accessor path: polygons with holes need nested ring arrays ──
-  // Construct [outerRing, hole1, hole2, …] per polygon so earcut
-  // gets explicit hole boundaries.  Simple polygons become [ring].
   const polygons: PolygonRings[] = new Array(numPolygons);
   for (let i = 0; i < numPolygons; i++) {
     const rStart = polygonOffsets[i];
@@ -336,7 +401,6 @@ export function buildPolygonLayer(
     const numRings = rEnd - rStart;
 
     if (numRings === 1) {
-      // Simple polygon — single ring of [lng, lat] pairs
       const cStart = ringOffsets[rStart];
       const cEnd = ringOffsets[rStart + 1];
       const ring: number[][] = new Array(cEnd - cStart);
@@ -345,7 +409,6 @@ export function buildPolygonLayer(
       }
       polygons[i] = ring;
     } else {
-      // Polygon with holes — array of rings
       const rings: number[][][] = new Array(numRings);
       for (let r = 0; r < numRings; r++) {
         const cStart = ringOffsets[rStart + r];

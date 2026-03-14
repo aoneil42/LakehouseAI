@@ -22,9 +22,7 @@ import {
   fetchTableBbox,
   fetchSchema,
   expandBbox,
-  MAX_FEATURES_POINT,
-  MAX_FEATURES_LINE,
-  MAX_FEATURES_POLYGON,
+  MAX_FEATURES_PER_LAYER,
 } from "./queries";
 import type { Bbox, TimeFilter } from "./queries";
 import { buildAutoLayer, detectGeomType, getFeatureProps } from "./layers";
@@ -64,6 +62,7 @@ import {
   debugLog,
 } from "./ui";
 import type { SearchResult, ActiveLayerInfo } from "./ui";
+import { showSaveDialog } from "./save-dialog";
 
 // ---------------------------------------------------------------------------
 // State
@@ -245,20 +244,10 @@ const handleClick: FeatureClickHandler = (info) => {
 // Layer loading with viewport bbox
 // ---------------------------------------------------------------------------
 
-/** Return the appropriate feature limit for a given geometry type.
- *  The GeoArrow pipeline + earcut cooldowns handle large polygon counts;
- *  the real OOM guard is MAX_RESPONSE_BYTES (256 MB) in geoarrow.ts. */
-function getEffectiveLimit(gt?: GeomType, _zoom?: number): number {
-  switch (gt) {
-    case "polygon":
-      return MAX_FEATURES_POLYGON;
-    case "line":
-      return MAX_FEATURES_LINE;
-    case "point":
-      return MAX_FEATURES_POINT;
-    default:
-      return MAX_FEATURES_POLYGON; // conservative for unknown
-  }
+/** Return the feature limit per layer (uniform across all geometry types).
+ *  The real OOM guard is MAX_RESPONSE_BYTES (256 MB) in geoarrow.ts. */
+function getEffectiveLimit(_gt?: GeomType, _zoom?: number): number {
+  return MAX_FEATURES_PER_LAYER;
 }
 
 /** Compute simplification tolerance for a given zoom level.
@@ -316,19 +305,6 @@ async function loadLayerWithViewport(
 
     if (gt === "polygon") {
       debugLogGeometry(table, key);
-    }
-
-    // If this was the first load and the type is point or line, we used a
-    // conservative initial limit.  Re-fetch with the proper higher limit.
-    if (!knownType && (gt === "point" || gt === "line")) {
-      const higherLimit = getEffectiveLimit(gt, zoom);
-      if (table.numRows >= limit && higherLimit > limit) {
-        debugLog(`re-fetching ${key} with ${gt} limit (${higherLimit})`);
-        const bigger = await loadLayer(ns, layer, fetchBbox, higherLimit);
-        tables.set(key, bigger);
-        geomTypes.set(key, gt);
-        updateTreeLayerCount(ns, layer, bigger.numRows);
-      }
     }
 
     // For polygon layers, set a dynamic cooldown that scales with feature count
@@ -452,6 +428,66 @@ async function main() {
     onZoom: (ns, layer) => handleZoom(ns, layer),
     onOpenAttributeTable: (ns, layer) => handleOpenAttributeTable(ns, layer),
     onOpenSymbology: (ns, layer) => handleOpenSymbology(ns, layer),
+    onDeleteScratch: async (key) => {
+      const [ns] = splitKey(key);
+      if (!confirm(`Delete scratch namespace "${ns}" and all its tables from the lakehouse?`)) return;
+      try {
+        const resp = await fetch(`/api/scratch/${encodeURIComponent(ns)}`, { method: "DELETE" });
+        if (!resp.ok) {
+          const err = await resp.json();
+          setStatus(`Error: ${err.error}`);
+          return;
+        }
+        for (const k of [...tables.keys()]) {
+          if (k.startsWith(ns + "/")) {
+            visibleSet.delete(k);
+            tables.delete(k);
+            geomTypes.delete(k);
+            layerStyles.delete(k);
+            loadedBbox.delete(k);
+            loadedZoom.delete(k);
+          }
+        }
+        rebuildLayers();
+        updateStatusBar();
+        updateActiveLayers();
+        setStatus(`Deleted scratch namespace "${ns}"`);
+      } catch (e) {
+        setStatus(`Error deleting scratch: ${(e as Error).message}`);
+      }
+    },
+    onSaveScratch: async (key) => {
+      const [ns, table] = splitKey(key);
+      const result = await showSaveDialog(ns, table);
+      if (!result) return;
+      try {
+        const resp = await fetch("/api/scratch/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_namespace: ns,
+            source_table: table,
+            target_namespace: result.targetNamespace,
+            target_table: result.targetTable,
+          }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json();
+          setStatus(`Error: ${err.error}`);
+          return;
+        }
+        const data = await resp.json();
+        const newKey = `${result.targetNamespace}/${result.targetTable}`;
+        await loadLayerWithViewport(result.targetNamespace, result.targetTable);
+        visibleSet.add(newKey);
+        rebuildLayers();
+        updateStatusBar();
+        updateActiveLayers();
+        setStatus(`Saved ${data.rows} rows to ${data.target}`);
+      } catch (e) {
+        setStatus(`Error saving: ${(e as Error).message}`);
+      }
+    },
   });
 
   // Initialize catalog modal
@@ -1070,6 +1106,32 @@ import("./agent-ws").then(({ AgentWebSocket }) => {
     let wsClient: InstanceType<typeof AgentWebSocket> | null = null;
     let panelOpen = false;
 
+    // Provide active layer keys to the chat panel for namespace filtering
+    panel.setActiveLayersProvider(() => [...visibleSet]);
+
+    // Clear button: drop scratch namespace, remove layers, clear chat
+    const scratchNs = `_scratch_${sessionId.replace(/-/g, "").slice(0, 8)}`;
+    panel.setClearHandler(async () => {
+      try {
+        await fetch(`/api/scratch/${scratchNs}`, { method: "DELETE" });
+      } catch {
+        /* best effort */
+      }
+      // Remove all layers from this scratch namespace
+      for (const key of [...tables.keys()]) {
+        const [ns] = splitKey(key);
+        if (ns === scratchNs) {
+          tables.delete(key);
+          geomTypes.delete(key);
+          visibleSet.delete(key);
+          loadedBbox.delete(key);
+        }
+      }
+      rebuildLayers();
+      updateStatusBar();
+      panel.clearMessages();
+    });
+
     // Debounced layer_ready batching — collect rapid-fire events
     type LREvent = import("./agent-ws").LayerReadyEvent;
     let pendingEvents: LREvent[] = [];
@@ -1130,10 +1192,13 @@ import("./agent-ws").then(({ AgentWebSocket }) => {
     if (agentSection) agentSection.style.display = "";
     const descEl = toggleBtn?.querySelector(".sidebar-link-desc");
 
+    const chatSidebar = document.getElementById("chat-sidebar")!;
+
     toggleBtn?.addEventListener("click", () => {
       panelOpen = !panelOpen;
       if (panelOpen) {
-        panel.mount(document.body);
+        panel.mount(chatSidebar);
+        setTimeout(() => getMap().resize(), 260);
         wsClient = new AgentWebSocket(
           sessionId,
           queueLayerReady,
@@ -1143,6 +1208,7 @@ import("./agent-ws").then(({ AgentWebSocket }) => {
         if (descEl) descEl.textContent = "Click to close";
       } else {
         panel.unmount();
+        setTimeout(() => getMap().resize(), 260);
         wsClient?.disconnect();
         wsClient = null;
         pendingEvents = [];

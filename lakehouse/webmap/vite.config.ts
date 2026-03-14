@@ -9,7 +9,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/api/agent": "http://localhost:8090",
       "/api": "http://localhost:8000",
+      "/ws/agent": { target: "http://localhost:8090", ws: true },
       "/ws": { target: "http://localhost:8000", ws: true },
     },
   },

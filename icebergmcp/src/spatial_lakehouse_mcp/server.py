@@ -97,24 +97,22 @@ def list_tables(namespace: str = "") -> str:
     and column count.
     """
     try:
+        ns_filter = ""
         if namespace:
             namespace = validate_namespace(namespace)
-            rows = execute_query(
-                f"SELECT database_name, schema_name, table_name, "
-                f"       column_count, estimated_size "
-                f"FROM duckdb_tables() "
-                f"WHERE database_name = '{CATALOG}' "
-                f"  AND schema_name = '{namespace}' "
-                f"ORDER BY table_name"
-            )
-        else:
-            rows = execute_query(
-                f"SELECT database_name, schema_name, table_name, "
-                f"       column_count, estimated_size "
-                f"FROM duckdb_tables() "
-                f"WHERE database_name = '{CATALOG}' "
-                f"ORDER BY schema_name, table_name"
-            )
+            ns_filter = f"AND c.schema_name = '{namespace}' "
+
+        # Use duckdb_columns() for accurate column counts — duckdb_tables()
+        # reports column_count=1 for Iceberg catalog tables.
+        rows = execute_query(
+            f"SELECT c.database_name, c.schema_name, c.table_name, "
+            f"       COUNT(*) AS column_count "
+            f"FROM duckdb_columns() c "
+            f"WHERE c.database_name = '{CATALOG}' "
+            f"{ns_filter}"
+            f"GROUP BY c.database_name, c.schema_name, c.table_name "
+            f"ORDER BY c.schema_name, c.table_name"
+        )
         return format_result(rows)
     except Exception as e:
         return format_error(e, "list_tables")
@@ -144,7 +142,7 @@ def describe_table(table: str) -> str:
             row["is_geometry"] = (
                 col_name in geom_indicators
                 or "GEOMETRY" in col_type
-                or "BLOB" in col_type  # WKB is stored as BLOB in Iceberg/Parquet
+                or "BLOB" in col_type  # Legacy pre-migration tables store WKB as BLOB
             )
 
         return format_result(rows)
@@ -388,12 +386,14 @@ def get_bbox(
         else:
             where_clause = ""
 
+        geom_expr = f"ST_GeomFromWKB({geom_col})"
         sql = (
             f"SELECT "
-            f"  ST_XMin(ext) AS min_lon, ST_YMin(ext) AS min_lat, "
-            f"  ST_XMax(ext) AS max_lon, ST_YMax(ext) AS max_lat "
-            f"FROM (SELECT ST_Extent({geom_col}) AS ext "
-            f"      FROM {qualified} {where_clause}) sub"
+            f"  MIN(ST_XMin({geom_expr})) AS min_lon, "
+            f"  MIN(ST_YMin({geom_expr})) AS min_lat, "
+            f"  MAX(ST_XMax({geom_expr})) AS max_lon, "
+            f"  MAX(ST_YMax({geom_expr})) AS max_lat "
+            f"FROM {qualified} {where_clause}"
         )
 
         rows = execute_query(sql)
@@ -718,17 +718,22 @@ def sample_data(
         qualified = validate_table_ref(table, CATALOG)
         n = max(1, min(n, 100))
 
-        if not include_geometry and columns.strip() == "*":
-            # Get column list excluding geometry columns
+        if columns.strip() == "*":
+            # Build explicit column list to handle GEOMETRY type
             desc_rows = execute_query(f"DESCRIBE {qualified}")
-            non_geom_cols = []
+            col_parts = []
             for row in desc_rows:
                 col_name = row.get("column_name", "")
                 col_type = str(row.get("column_type", "")).upper()
-                if col_name.lower() not in ("geometry", "geom", "wkb_geometry", "shape", "the_geom") \
-                   and "GEOMETRY" not in col_type and "BLOB" not in col_type:
-                    non_geom_cols.append(col_name)
-            col_clause = ", ".join(non_geom_cols) if non_geom_cols else "*"
+                is_geom = col_name.lower() in ("geometry", "geom", "wkb_geometry", "shape", "the_geom") \
+                    or "GEOMETRY" in col_type or "BLOB" in col_type
+                if is_geom:
+                    if not include_geometry:
+                        continue
+                    col_parts.append(f'ST_AsGeoJSON(ST_GeomFromWKB({col_name})) AS {col_name}')
+                else:
+                    col_parts.append(col_name)
+            col_clause = ", ".join(col_parts) if col_parts else "*"
         else:
             col_clause = columns
 
@@ -775,15 +780,16 @@ def table_stats(
 
         # Spatial stats (best-effort — skip if geometry column doesn't exist)
         try:
+            geom_expr = f"ST_GeomFromWKB({geom_col})"
             spatial = execute_query(f"""
                 SELECT
                     COUNT(*)::INTEGER AS total_rows,
                     COUNT({geom_col})::INTEGER AS non_null_geom,
                     (COUNT(*) - COUNT({geom_col}))::INTEGER AS null_geom,
-                    ST_XMin(ST_Extent({geom_col})) AS min_lon,
-                    ST_YMin(ST_Extent({geom_col})) AS min_lat,
-                    ST_XMax(ST_Extent({geom_col})) AS max_lon,
-                    ST_YMax(ST_Extent({geom_col})) AS max_lat
+                    MIN(ST_XMin({geom_expr})) AS min_lon,
+                    MIN(ST_YMin({geom_expr})) AS min_lat,
+                    MAX(ST_XMax({geom_expr})) AS max_lon,
+                    MAX(ST_YMax({geom_expr})) AS max_lat
                 FROM {qualified}
             """)
             if spatial:
@@ -791,7 +797,7 @@ def table_stats(
 
             # Geometry types
             geom_types = execute_query(f"""
-                SELECT ST_GeometryType({geom_col}) AS geom_type,
+                SELECT ST_GeometryType({geom_expr}) AS geom_type,
                        COUNT(*)::INTEGER AS cnt
                 FROM {qualified}
                 WHERE {geom_col} IS NOT NULL
@@ -933,28 +939,31 @@ def export_geojson(
 
         rows = execute_query(sql)
 
-        # Build FeatureCollection
-        features = []
+        # Build GeoJSON string directly — embed ST_AsGeoJSON() strings
+        # without json.loads() → json.dumps() round-trip.
+        feature_strs = []
         for row in rows:
-            geojson_str = row.pop("__geojson", None)
-            geom = json.loads(geojson_str) if geojson_str else None
-            features.append({
-                "type": "Feature",
-                "geometry": geom,
-                "properties": {k: v for k, v in row.items()},
-            })
+            geojson_str = row.pop("__geojson", None) or "null"
+            props_str = json.dumps(
+                {k: v for k, v in row.items()}, default=str
+            )
+            feature_strs.append(
+                f'{{"type":"Feature","geometry":{geojson_str},'
+                f'"properties":{props_str}}}'
+            )
 
-        collection = {
-            "type": "FeatureCollection",
-            "features": features,
-            "metadata": {
-                "source_table": table,
-                "feature_count": len(features),
-                "truncated": len(features) >= limit,
-            },
-        }
+        count = len(feature_strs)
+        features_json = "[" + ",".join(feature_strs) + "]"
+        metadata_str = json.dumps({
+            "source_table": table,
+            "feature_count": count,
+            "truncated": count >= limit,
+        })
 
-        return json.dumps(collection, default=str)
+        return (
+            f'{{"type":"FeatureCollection","features":{features_json},'
+            f'"metadata":{metadata_str}}}'
+        )
     except Exception as e:
         return format_error(e, "export_geojson")
 
@@ -1055,7 +1064,7 @@ def search_tables(
             for cname, ctype in zip(col_names, col_types):
                 if (cname.lower() in geom_indicators
                         or "GEOMETRY" in str(ctype).upper()
-                        or "BLOB" in str(ctype).upper()):
+                        or "BLOB" in str(ctype).upper()):  # Legacy pre-migration tables
                     has_geometry = True
                     break
 
@@ -1113,7 +1122,38 @@ def materialize_result(
             if overwrite:
                 conn.execute(f"DROP TABLE IF EXISTS {qualified}")
 
-            conn.execute(f"CREATE TABLE {qualified} AS {sql}")
+            # Detect GEOMETRY columns and wrap with ST_AsWKB() so Iceberg
+            # can store them as BLOB (Iceberg doesn't support native GEOMETRY).
+            ctas_sql = sql
+            try:
+                # Strip trailing semicolons for safe subquery wrapping
+                inner_sql = sql.rstrip().rstrip(";")
+                desc = conn.execute(
+                    f"DESCRIBE SELECT * FROM ({inner_sql}) AS _describe_src LIMIT 0"
+                ).fetchall()
+                geom_cols = {row[0] for row in desc if row[1].upper() == "GEOMETRY"}
+                if geom_cols:
+                    all_cols = [row[0] for row in desc]
+                    # Deduplicate column names (e.g. SELECT b.*, b.geometry → two "geometry")
+                    seen = set()
+                    col_exprs = []
+                    for c in all_cols:
+                        if c in seen:
+                            continue
+                        seen.add(c)
+                        if c in geom_cols:
+                            col_exprs.append(f'ST_AsWKB("{c}") AS "{c}"')
+                        else:
+                            col_exprs.append(f'"{c}"')
+                    select_clause = ", ".join(col_exprs)
+                    ctas_sql = f"SELECT {select_clause} FROM ({inner_sql}) AS _geom_src"
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "GEOMETRY detection failed, using original SQL: %s", e
+                )
+
+            conn.execute(f"CREATE TABLE {qualified} AS {ctas_sql}")
 
             count = conn.execute(
                 f"SELECT COUNT(*)::INTEGER FROM {qualified}"

@@ -7,7 +7,7 @@ from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
 
 from iceberg_geo.geoservices.proto import FeatureCollection_pb2 as pb
 from iceberg_geo.geoservices.serializers.esri_pbf import (
-    _encode_geometry,
+    _encode_geometry_from_coord_arrays,
     _extract_coord_arrays,
     serialize,
 )
@@ -186,7 +186,7 @@ class TestSerialize:
         fc.ParseFromString(pbf_bytes)
         feature = fc.queryResult.featureResult.features[0]
         # Should have attributes
-        assert len(feature.attributes) == 2  # objectid + name
+        assert len(feature.attributes) == 3  # __oid + objectid + name
 
     def test_geometry_has_coords(self):
         result, schema = _make_point_result(1)
@@ -219,7 +219,8 @@ class TestEncodeGeometry:
     def test_point_encoding(self):
         pb_geom = pb.FeatureCollectionPBuffer.Geometry()
         point = Point(10.0, 20.0)
-        _encode_geometry(pb_geom, point, 0.0, 100.0, 1e-8, 1e-8)
+        coord_arrays = _extract_coord_arrays(point)
+        _encode_geometry_from_coord_arrays(pb_geom, coord_arrays, 0.0, 100.0, 1e-8, 1e-8)
 
         assert len(pb_geom.lengths) == 1
         assert pb_geom.lengths[0] == 1
@@ -228,7 +229,8 @@ class TestEncodeGeometry:
     def test_polygon_encoding(self):
         pb_geom = pb.FeatureCollectionPBuffer.Geometry()
         poly = box(0, 0, 1, 1)
-        _encode_geometry(pb_geom, poly, 0.0, 1.0, 1e-8, 1e-8)
+        coord_arrays = _extract_coord_arrays(poly)
+        _encode_geometry_from_coord_arrays(pb_geom, coord_arrays, 0.0, 1.0, 1e-8, 1e-8)
 
         assert len(pb_geom.lengths) == 1  # one ring
         assert pb_geom.lengths[0] == 5  # closed polygon ring
@@ -238,7 +240,8 @@ class TestEncodeGeometry:
         """Verify coords are delta-encoded."""
         pb_geom = pb.FeatureCollectionPBuffer.Geometry()
         line = LineString([(0, 0), (1, 0), (1, 1)])
-        _encode_geometry(pb_geom, line, 0.0, 1.0, 1e-8, 1e-8)
+        coord_arrays = _extract_coord_arrays(line)
+        _encode_geometry_from_coord_arrays(pb_geom, coord_arrays, 0.0, 1.0, 1e-8, 1e-8)
 
         # First point: dx=0, dy=-1e8 (upper-left origin)
         # Second: dx=1e8, dy=0

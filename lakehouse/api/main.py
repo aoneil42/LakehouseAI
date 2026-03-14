@@ -16,6 +16,8 @@ import urllib.parse
 import urllib.request
 
 import duckdb
+import pyarrow as pa
+import pyarrow.ipc as ipc
 from fastapi import FastAPI, File, Form, Query, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -123,6 +125,8 @@ def _init_connection() -> duckdb.DuckDBPyConnection:
         for ext in ("httpfs", "iceberg", "spatial"):
             conn.execute(f"INSTALL {ext}; LOAD {ext};")
 
+    conn.execute("SET geometry_always_xy = true")
+
     key_id = os.environ["GARAGE_KEY_ID"]
     secret = os.environ["GARAGE_SECRET_KEY"]
 
@@ -139,6 +143,24 @@ def _init_connection() -> duckdb.DuckDBPyConnection:
         )
         """
     )
+
+    # Iceberg catalog secret for LakeKeeper
+    conn.execute("""
+        CREATE SECRET iceberg_secret (
+            TYPE ICEBERG,
+            TOKEN 'dummy'
+        )
+    """)
+
+    # Attach LakeKeeper catalog
+    conn.execute(f"""
+        ATTACH 'lakehouse' AS lakehouse (
+            TYPE ICEBERG,
+            ENDPOINT '{CATALOG_URL}',
+            SECRET iceberg_secret,
+            ACCESS_DELEGATION_MODE none
+        )
+    """)
 
     return conn
 
@@ -238,21 +260,34 @@ def list_tables(namespace: str) -> list[str]:
 
 
 def _compute_bbox(source: str) -> tuple[float, float, float, float] | None:
-    """Compute bounding box for a table source using MIN/MAX.
+    """Compute bounding box for a table source.
 
-    Note: ST_Extent() is buggy with iceberg_scan in DuckDB — it returns a
-    single-point bbox instead of the full extent.  The MIN/MAX approach on
-    individual geometries works correctly.
+    Tries ST_Extent first (works with native GEOMETRY and DuckDB 1.5's
+    row-group stats), falls back to MIN/MAX for legacy BLOB tables.
     """
-    sql = (
-        f"SELECT MIN(ST_XMin(g)), MIN(ST_YMin(g)), "
-        f"MAX(ST_XMax(g)), MAX(ST_YMax(g)) "
-        f"FROM (SELECT ST_GeomFromWKB(geometry) AS g FROM {source})"
-    )
     with _pool.acquire() as conn:  # type: ignore[union-attr]
-        row = conn.execute(sql).fetchone()
-    if row and row[0] is not None:
-        return (row[0], row[1], row[2], row[3])
+        # Primary: ST_Extent on native GEOMETRY columns
+        try:
+            row = conn.execute(
+                f"SELECT ST_XMin(e), ST_YMin(e), ST_XMax(e), ST_YMax(e) "
+                f"FROM (SELECT ST_Extent(geometry) AS e FROM {source})"
+            ).fetchone()
+            if row and row[0] is not None:
+                return (row[0], row[1], row[2], row[3])
+        except Exception:
+            pass
+
+        # Fallback: MIN/MAX on individual geometries (legacy BLOB tables)
+        try:
+            row = conn.execute(
+                f"SELECT MIN(ST_XMin(g)), MIN(ST_YMin(g)), "
+                f"MAX(ST_XMax(g)), MAX(ST_YMax(g)) "
+                f"FROM (SELECT ST_GeomFromWKB(geometry) AS g FROM {source})"
+            ).fetchone()
+            if row and row[0] is not None:
+                return (row[0], row[1], row[2], row[3])
+        except Exception:
+            pass
     return None
 
 
@@ -361,6 +396,9 @@ def get_features(
     time_end: str | None = Query(
         default=None, description="End of time window (ISO 8601)"
     ),
+    format: str | None = Query(
+        default=None, description="Output format: 'arrow' for Arrow IPC stream"
+    ),
 ) -> Response:
     if not _VALID_NS_PATH.match(namespace):
         return JSONResponse(
@@ -406,10 +444,10 @@ def get_features(
     # ST_Dump flattens Multi* types (MultiPolygon → Polygon, etc.) so that
     # GeoArrow deck.gl layers render correctly (they don't handle Multi*).
     if "GEOMETRY" in geom_col_type:
-        geom_from = "ST_GeomFromWKB(ST_AsWKB(geometry))"
+        geom_from = "geometry"           # Native GEOMETRY, no conversion needed
         geom_base = "geometry"
     else:
-        geom_from = "ST_GeomFromWKB(geometry)"
+        geom_from = "ST_GeomFromWKB(geometry)"    # Legacy BLOB tables
         geom_base = "ST_GeomFromWKB(geometry)"
 
     # Optionally simplify geometry (Douglas-Peucker) for low-zoom rendering
@@ -505,11 +543,31 @@ def get_features(
         total_count = row[0] if row else 0
 
     # Put geometry first (matches the column order readGeoParquet expects),
-    # and convert WKB binary → DuckDB GEOMETRY so COPY TO writes GeoParquet.
+    # and convert WKB binary → DuckDB GEOMETRY so output has proper GeoArrow metadata.
     sql = f"SELECT {', '.join(select_parts)} FROM {source}{where}{limit_clause}"
 
-    # Use DuckDB's native Parquet writer (produces correct GeoParquet encoding
-    # with proper GeoArrow extension metadata that readGeoParquet WASM needs).
+    headers: dict[str, str] = {}
+    if total_count is not None:
+        headers["X-Total-Count"] = str(total_count)
+        headers["X-Truncated"] = str(limit is not None and total_count > limit).lower()
+
+    if format == "arrow":
+        # Arrow IPC streaming format — DuckDB 1.5 natively produces geoarrow.wkb
+        # extension arrays, so geometry metadata propagates to the browser without
+        # WASM GeoParquet decoding.
+        with _pool.acquire() as conn:  # type: ignore[union-attr]
+            arrow_table = conn.execute(sql).fetch_arrow_table()
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, arrow_table.schema) as writer:
+            writer.write_table(arrow_table)
+        data = sink.getvalue().to_pybytes()
+        return Response(
+            content=data,
+            media_type="application/vnd.apache.arrow.stream",
+            headers=headers or None,
+        )
+
+    # GeoParquet fallback — uses DuckDB's native Parquet writer
     fd, tmppath = tempfile.mkstemp(suffix=".parquet")
     os.close(fd)
     try:
@@ -521,11 +579,6 @@ def get_features(
             data = f.read()
     finally:
         os.unlink(tmppath)
-
-    headers: dict[str, str] = {}
-    if total_count is not None:
-        headers["X-Total-Count"] = str(total_count)
-        headers["X-Truncated"] = str(limit is not None and total_count > limit).lower()
 
     return Response(
         content=data,
@@ -732,35 +785,6 @@ def get_column_stats(namespace: str, layer: str, column: str) -> Response:
 # ---------------------------------------------------------------------------
 # Upload — ingest GeoJSON or GeoParquet into the Iceberg lakehouse
 # ---------------------------------------------------------------------------
-
-
-_pyiceberg_catalog = None
-_pyiceberg_lock = threading.Lock()
-
-
-def _get_pyiceberg_catalog():
-    """Lazy-init a PyIceberg REST catalog connection."""
-    global _pyiceberg_catalog
-    if _pyiceberg_catalog is not None:
-        return _pyiceberg_catalog
-
-    from pyiceberg.catalog import load_catalog
-
-    _pyiceberg_catalog = load_catalog(
-        "rest",
-        **{
-            "uri": CATALOG_URL,
-            "warehouse": "lakehouse",
-            "token": "dummy",
-            "s3.access-key-id": os.environ["GARAGE_KEY_ID"],
-            "s3.secret-access-key": os.environ["GARAGE_SECRET_KEY"],
-            "s3.endpoint": "http://garage:3900",
-            "s3.region": "garage",
-            "s3.path-style-access": "true",
-            "s3.remote-signing-enabled": "false",
-        },
-    )
-    return _pyiceberg_catalog
 
 
 def _detect_geom_column_geoparquet(tmp_path: str) -> tuple[str, str]:
@@ -1676,64 +1700,90 @@ _FAMILY_SUFFIX = {"point": "_points", "line": "_lines", "polygon": "_polygons", 
 def _write_to_iceberg(
     combined, namespace: str, table_name: str, append: bool, num_files: int = 1
 ):
-    """Split by geometry type and write to Iceberg. Returns response dict or JSONResponse on error."""
+    """Split by geometry type and write to Iceberg via DuckDB.
+
+    Returns response dict or JSONResponse on error.
+    """
     splits = _split_by_geometry_type(combined)
     mixed = len(splits) > 1
     tables_written: list[dict] = []
 
-    catalog = _get_pyiceberg_catalog()
+    with _pool.acquire() as conn:  # type: ignore[union-attr]
+        # Ensure namespace exists
+        conn.execute(
+            f"CREATE SCHEMA IF NOT EXISTS lakehouse.{namespace}"
+        )
 
-    try:
-        catalog.create_namespace(namespace)
-    except Exception:
-        pass
+        for family, split_table in splits.items():
+            suffix = _FAMILY_SUFFIX.get(family, f"_{family}") if mixed else ""
+            split_name = f"{table_name}{suffix}"
 
-    for family, split_table in splits.items():
-        suffix = _FAMILY_SUFFIX.get(family, f"_{family}") if mixed else ""
-        split_name = f"{table_name}{suffix}"
+            if not _VALID_NAME.match(split_name):
+                continue
 
-        if not _VALID_NAME.match(split_name):
-            continue
+            qualified = f"lakehouse.{namespace}.{split_name}"
 
-        table_id = f"{namespace}.{split_name}"
-        created = False
-        try:
-            ice_table = catalog.create_table(table_id, schema=split_table.schema)
-            created = True
-        except Exception as e:
-            msg = str(e).lower()
-            if "already exists" in msg or "alreadyexists" in msg:
-                if not append:
-                    return JSONResponse(
-                        status_code=409,
-                        content={
-                            "error": (
-                                f"Table {table_id} already exists. "
-                                "Set append=true to add data to it."
-                            )
-                        },
-                    )
-                ice_table = catalog.load_table(table_id)
+            # Register Arrow table in DuckDB
+            reg_name = f"__upload_{uuid.uuid4().hex[:8]}"
+            conn.register(reg_name, split_table)
+
+            # Detect geometry column and build SELECT clause
+            col_names = [f.name for f in split_table.schema]
+            has_geom = "geometry" in col_names
+            if has_geom:
+                other_cols = [c for c in col_names if c != "geometry"]
+                select_parts = ["ST_GeomFromWKB(geometry) AS geometry"] + other_cols
             else:
-                return JSONResponse(
-                    status_code=500,
-                    content={"error": f"Failed to create table: {e}"},
-                )
+                select_parts = col_names
+            select_clause = ", ".join(select_parts)
 
-        if ice_table.io.properties.get("s3.remote-signing-enabled") == "true":
-            ice_table.io.properties["s3.remote-signing-enabled"] = "false"
-            ice_table.io.properties.pop("s3.signer", None)
-            ice_table.io.properties.pop("s3.signer.endpoint", None)
-            ice_table.io.properties.pop("s3.signer.uri", None)
+            created = False
+            if append:
+                # Check if table exists
+                exists = conn.execute(
+                    f"SELECT COUNT(*) FROM duckdb_tables() "
+                    f"WHERE database_name = 'lakehouse' "
+                    f"AND schema_name = '{namespace}' "
+                    f"AND table_name = '{split_name}'"
+                ).fetchone()[0] > 0
+                if exists:
+                    conn.execute(
+                        f"INSERT INTO {qualified} SELECT {select_clause} FROM {reg_name}"
+                    )
+                else:
+                    conn.execute(
+                        f"CREATE TABLE {qualified} AS SELECT {select_clause} FROM {reg_name}"
+                    )
+                    created = True
+            else:
+                try:
+                    conn.execute(
+                        f"CREATE TABLE {qualified} AS SELECT {select_clause} FROM {reg_name}"
+                    )
+                    created = True
+                except duckdb.CatalogException as e:
+                    if "already exists" in str(e).lower():
+                        conn.unregister(reg_name)
+                        return JSONResponse(
+                            status_code=409,
+                            content={
+                                "error": (
+                                    f"Table {namespace}.{split_name} already exists. "
+                                    "Set append=true to add data to it."
+                                )
+                            },
+                        )
+                    raise
 
-        ice_table.append(split_table)
-        tables_written.append({
-            "table": split_name,
-            "geometry_type": family,
-            "rows": split_table.num_rows,
-            "created": created,
-        })
+            conn.unregister(reg_name)
+            tables_written.append({
+                "table": split_name,
+                "geometry_type": family,
+                "rows": split_table.num_rows,
+                "created": created,
+            })
 
+    # Invalidate catalog prefix cache (LakeKeeper may have new tables)
     global _catalog_prefix
     _catalog_prefix = None
 
@@ -2029,3 +2079,100 @@ async def agent_notify(session_id: str, payload: LayerNotification):
     }
     await _ws_manager.send_to_session(session_id, event)
     return {"status": "notified", "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
+# Scratch Layer Management
+# ---------------------------------------------------------------------------
+
+
+@app.delete("/api/scratch/{namespace}")
+def delete_scratch_namespace(namespace: str):
+    """Drop an entire scratch namespace. Must start with '_scratch_'."""
+    if not namespace.startswith("_scratch_"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Only scratch namespaces can be deleted via this endpoint"},
+        )
+    if not _VALID_NS_PATH.match(namespace):
+        return JSONResponse(status_code=400, content={"error": "Invalid namespace name"})
+    dropped: list[str] = []
+    with _pool.acquire() as conn:  # type: ignore[union-attr]
+        # Iceberg doesn't support DROP SCHEMA CASCADE — drop tables first
+        try:
+            rows = conn.execute(
+                f"SELECT table_name FROM information_schema.tables "
+                f"WHERE table_catalog='lakehouse' AND table_schema='{namespace}'"
+            ).fetchall()
+            for (tbl,) in rows:
+                conn.execute(f"DROP TABLE IF EXISTS lakehouse.{namespace}.{tbl}")
+                dropped.append(tbl)
+        except Exception:
+            pass  # namespace may not exist
+        try:
+            conn.execute(f"DROP SCHEMA IF EXISTS lakehouse.{namespace}")
+        except Exception:
+            pass  # schema may not exist or already empty
+    global _catalog_prefix
+    _catalog_prefix = None
+    return {"status": "ok", "namespace": namespace, "dropped_tables": dropped}
+
+
+class ScratchSaveRequest(BaseModel):
+    source_namespace: str
+    source_table: str
+    target_namespace: str
+    target_table: str
+
+
+@app.post("/api/scratch/save")
+def save_scratch_layer(req: ScratchSaveRequest):
+    """Copy a scratch table to a permanent namespace."""
+    if not req.source_namespace.startswith("_scratch_"):
+        return JSONResponse(
+            status_code=400, content={"error": "Source must be a scratch namespace"}
+        )
+    if req.target_namespace.startswith("_scratch_"):
+        return JSONResponse(
+            status_code=400, content={"error": "Target cannot be a scratch namespace"}
+        )
+    for ns in (req.source_namespace, req.target_namespace):
+        if not _VALID_NS_PATH.match(ns):
+            return JSONResponse(
+                status_code=400, content={"error": f"Invalid namespace: {ns}"}
+            )
+    for name in (req.source_table, req.target_table):
+        if not _VALID_NAME.match(name):
+            return JSONResponse(
+                status_code=400, content={"error": f"Invalid table name: {name}"}
+            )
+
+    source = f"lakehouse.{req.source_namespace}.{req.source_table}"
+    target = f"lakehouse.{req.target_namespace}.{req.target_table}"
+
+    with _pool.acquire() as conn:  # type: ignore[union-attr]
+        conn.execute(
+            f"CREATE SCHEMA IF NOT EXISTS lakehouse.{req.target_namespace}"
+        )
+        try:
+            conn.execute(f"CREATE TABLE {target} AS SELECT * FROM {source}")
+        except duckdb.CatalogException as e:
+            if "already exists" in str(e).lower():
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": f"Table {req.target_namespace}.{req.target_table} already exists"
+                    },
+                )
+            raise
+        row_count = conn.execute(f"SELECT COUNT(*) FROM {target}").fetchone()[0]
+
+    global _catalog_prefix
+    _catalog_prefix = None
+
+    return {
+        "status": "ok",
+        "source": f"{req.source_namespace}.{req.source_table}",
+        "target": f"{req.target_namespace}.{req.target_table}",
+        "rows": row_count,
+    }

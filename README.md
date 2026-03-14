@@ -7,8 +7,8 @@ A geospatial data lakehouse with natural-language spatial queries. Upload geospa
 | Directory | Description |
 |-----------|-------------|
 | [`lakehouse/`](lakehouse/) | Core platform — containerized stack with Iceberg storage, DuckDB, three API surfaces, and a deck.gl webmap with GIS tools (identify, measure, attribute table, symbology, time slider, export) |
-| [`icebergmcp/`](icebergmcp/) | MCP server — 18 tools for LLM agents to discover, query, and analyze spatial data |
-| [`spatialagent/`](spatialagent/) | Spatial agent — translates natural language to spatial SQL, executes via MCP, pushes results to the map |
+| [`icebergmcp/`](icebergmcp/) | MCP server — 19 tools for LLM agents to discover, query, and analyze spatial data |
+| [`spatialagent/`](spatialagent/) | Spatial agent — routes discovery queries to MCP tools, generates spatial SQL for analytical queries, pushes results to the map |
 
 ## Architecture
 
@@ -28,7 +28,7 @@ A geospatial data lakehouse with natural-language spatial queries. Upload geospa
            │                                  ▼
            │                       ┌─────────────────────┐
            │                       │   MCP Server        │
-           │                       │   18 spatial tools   │
+           │                       │   19 spatial tools   │
            │                       │   (port 8082)       │
            │                       └──────────┬──────────┘
            │                                  │
@@ -92,7 +92,7 @@ Connect any MCP-compatible client (Claude Desktop, Cursor, Claude Code) to query
 claude mcp add spatial-lakehouse --transport http --url http://localhost:8082/mcp
 ```
 
-See [`icebergmcp/README.md`](icebergmcp/) for all 18 tools and configuration.
+See [`icebergmcp/README.md`](icebergmcp/) for all 19 tools and configuration.
 
 ## License
 

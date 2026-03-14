@@ -19,10 +19,13 @@ export class ChatPanel {
   private messageList: HTMLDivElement;
   private input: HTMLInputElement;
   private sendBtn: HTMLButtonElement;
+  private clearBtn: HTMLButtonElement;
   private messages: ChatMessage[] = [];
   private sessionId: string;
   private loading = false;
   private abortController: AbortController | null = null;
+  private onClearResults: (() => void) | null = null;
+  private activeLayersProvider: (() => string[]) | null = null;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -33,7 +36,10 @@ export class ChatPanel {
     this.container.innerHTML = `
       <div class="chat-header">
         <span class="chat-title">Spatial Agent</span>
-        <span class="chat-status" id="chat-status">●</span>
+        <div class="chat-header-actions">
+          <span class="chat-status" id="chat-status">●</span>
+          <button class="chat-clear-btn" id="chat-clear" title="Clear scratch results">Clear</button>
+        </div>
       </div>
       <div class="chat-messages" id="chat-messages"></div>
       <div class="chat-input-row">
@@ -47,19 +53,25 @@ export class ChatPanel {
     this.input = this.container.querySelector("#chat-input")!;
     this.sendBtn = this.container.querySelector("#chat-send")!;
 
+    this.clearBtn = this.container.querySelector("#chat-clear")!;
+
     this.sendBtn.addEventListener("click", () => this.send());
     this.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !this.loading) this.send();
     });
+    this.clearBtn.addEventListener("click", () => this.onClearResults?.());
   }
 
   mount(parent: HTMLElement): void {
     parent.appendChild(this.container);
+    parent.classList.add("open");
   }
 
   unmount(): void {
     this.abortController?.abort();
+    const parent = this.container.parentElement;
     this.container.remove();
+    parent?.classList.remove("open");
   }
 
   setAgentStatus(connected: boolean): void {
@@ -68,6 +80,19 @@ export class ChatPanel {
       dot.style.color = connected ? "#4ade80" : "#f87171";
       dot.title = connected ? "Agent connected" : "Agent unavailable";
     }
+  }
+
+  setClearHandler(handler: () => void): void {
+    this.onClearResults = handler;
+  }
+
+  setActiveLayersProvider(provider: () => string[]): void {
+    this.activeLayersProvider = provider;
+  }
+
+  clearMessages(): void {
+    this.messages = [];
+    this.messageList.innerHTML = "";
   }
 
   private async send(): Promise<void> {
@@ -89,6 +114,7 @@ export class ChatPanel {
         body: JSON.stringify({
           session_id: this.sessionId,
           message: text,
+          active_layers: this.activeLayersProvider?.() ?? [],
         }),
         signal: this.abortController.signal,
       });

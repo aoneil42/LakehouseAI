@@ -1,6 +1,6 @@
 """
 Core query engine. Translates query parameters into DuckDB SQL
-against Arrow tables produced by PyIceberg scans.
+against Iceberg tables via the attached DuckDB catalog.
 
 This is the ONLY place where DuckDB queries are constructed and executed.
 Both pygeoapi and the GeoServices endpoint call these functions.
@@ -9,24 +9,18 @@ Both pygeoapi and the GeoServices endpoint call these functions.
 import logging
 import os
 import re
-import threading
 
 import duckdb
 import pyarrow as pa
-from pyiceberg.expressions import AlwaysTrue
-from pyiceberg.table import Table
 from shapely import wkb
 from shapely.geometry import box as shapely_box
 
+from .catalog import get_connection
 from .geometry import detect_geometry_type
 from .models import FeatureSchema, QueryParams, QueryResult
 
 logger = logging.getLogger(__name__)
 
-# Cache Arrow tables in memory, keyed by (table_identifier, snapshot_id).
-# Invalidates automatically when a new Iceberg snapshot appears.
-_arrow_cache: dict[tuple[str, int], pa.Table] = {}
-_arrow_cache_lock = threading.Lock()
 _schema_cache: dict[str, FeatureSchema] = {}
 
 # Allowlisted SQL tokens for WHERE clause sanitization
@@ -49,132 +43,138 @@ _DUCKDB_EXT_DIR = os.environ.get("DUCKDB_EXTENSION_DIR")
 
 
 def _get_connection() -> duckdb.DuckDBPyConnection:
-    """Create a DuckDB connection, loading the spatial extension if available."""
+    """Get the shared DuckDB connection from the catalog module."""
     global _HAS_SPATIAL
-    conn = duckdb.connect()
-    if _DUCKDB_EXT_DIR:
-        conn.execute(f"SET extension_directory = '{_DUCKDB_EXT_DIR}'")
-        conn.execute("SET autoinstall_known_extensions = false")
+    conn = get_connection()
     if _HAS_SPATIAL is None:
         try:
-            if not _DUCKDB_EXT_DIR:
-                conn.install_extension("spatial")
-            conn.load_extension("spatial")
+            # Test if spatial is loaded by running a spatial function
+            conn.execute("SELECT ST_Point(0, 0)")
             _HAS_SPATIAL = True
-        except Exception:
-            logger.warning(
-                "DuckDB spatial extension not available. "
-                "Spatial queries will use Shapely fallback."
-            )
-            _HAS_SPATIAL = False
-    elif _HAS_SPATIAL:
-        try:
-            conn.load_extension("spatial")
         except Exception:
             _HAS_SPATIAL = False
     return conn
 
 
-def get_table_schema(table: Table) -> FeatureSchema:
+def get_table_schema(table_ref: str) -> FeatureSchema:
     """
-    Extract feature schema from Iceberg table metadata.
+    Extract feature schema from an Iceberg table via DuckDB.
 
     Returns field names, types, geometry column name, spatial reference,
     and extent. Results are cached per table identifier.
     """
-    schema = table.schema()
-    raw_name = table.name()
-    if isinstance(raw_name, (tuple, list)):
-        table_identifier = ".".join(str(part) for part in raw_name)
-    else:
-        table_identifier = str(raw_name)
-
     # Return cached schema if available
-    if table_identifier in _schema_cache:
-        return _schema_cache[table_identifier]
+    if table_ref in _schema_cache:
+        return _schema_cache[table_ref]
 
-    # Map Iceberg/Arrow types to simple type strings
+    conn = _get_connection()
+
+    # Get column info via DESCRIBE
+    cols = conn.execute(f"DESCRIBE {table_ref}").fetchall()
+
+    # Map DuckDB types to simple type strings
     type_map = {
-        "string": "string",
-        "large_string": "string",
-        "utf8": "string",
+        "varchar": "string",
+        "text": "string",
         "int32": "int32",
+        "integer": "int32",
         "int64": "int64",
+        "bigint": "int64",
+        "smallint": "int32",
+        "tinyint": "int32",
         "float": "float",
-        "float32": "float",
+        "real": "float",
         "double": "double",
-        "float64": "double",
-        "bool": "boolean",
         "boolean": "boolean",
+        "bool": "boolean",
         "date": "date",
         "timestamp": "timestamp",
-        "binary": "binary",
-        "large_binary": "binary",
+        "blob": "binary",
+        "geometry": "geometry",
     }
 
-    geom_col = _detect_geometry_column_from_iceberg(schema)
-    id_field = _detect_id_field(schema)
+    # Detect geometry column
+    geom_col = "geometry"
+    geom_indicators = {"geometry", "geom", "wkb_geometry", "shape", "the_geom"}
+    for col_name, col_type, *_ in cols:
+        col_type_lower = col_type.lower()
+        if ("geometry" in col_type_lower or "blob" in col_type_lower) and \
+                col_name.lower() in geom_indicators:
+            geom_col = col_name
+            break
+    else:
+        # Fallback: first GEOMETRY or BLOB column
+        for col_name, col_type, *_ in cols:
+            col_type_lower = col_type.lower()
+            if "geometry" in col_type_lower or "blob" in col_type_lower:
+                geom_col = col_name
+                break
+
+    # Detect ID field
+    id_field = _detect_id_field_from_cols(cols)
 
     fields = []
-    for field in schema.fields:
-        field_name = field.name
-        if field_name == geom_col:
+    for col_name, col_type, *_ in cols:
+        if col_name == geom_col:
             continue
-
-        # Get type string
-        iceberg_type = str(field.field_type).lower()
-
-        # Complex types (struct, map, list) are always serialized as strings
+        col_type_lower = col_type.lower()
         simple_type = "string"
-        if not any(prefix in iceberg_type for prefix in ("struct", "map<", "list<")):
-            for key, val in type_map.items():
-                if key in iceberg_type:
-                    simple_type = val
-                    break
-
+        for key, val in type_map.items():
+            if key in col_type_lower:
+                simple_type = val
+                break
         fields.append({
-            "name": field_name,
+            "name": col_name,
             "type": simple_type,
-            "alias": field_name,
+            "alias": col_name,
         })
 
-    # Detect geometry type and compute extent from cached Arrow table
+    # Detect geometry type and compute extent
     geometry_type = "Polygon"
     extent = None
     try:
-        arrow_table = _get_cached_arrow_table(table)
-        if arrow_table.num_rows > 0:
-            wkb_bytes = arrow_table.column(geom_col)[0].as_py()
-            if wkb_bytes:
+        # Sample first row for geometry type
+        row = conn.execute(
+            f'SELECT "{geom_col}" FROM {table_ref} LIMIT 1'
+        ).fetchone()
+        if row and row[0] is not None:
+            wkb_bytes = row[0]
+            if isinstance(wkb_bytes, (bytes, bytearray)):
                 geometry_type = detect_geometry_type(wkb_bytes)
 
-            # Compute extent using DuckDB for speed
-            try:
-                conn = _get_connection()
-                conn.register("_extent_tmp", arrow_table)
-                row = conn.execute(
-                    f'SELECT MIN(ST_XMin(ST_GeomFromWKB("{geom_col}"))),'
-                    f'       MIN(ST_YMin(ST_GeomFromWKB("{geom_col}"))),'
-                    f'       MAX(ST_XMax(ST_GeomFromWKB("{geom_col}"))),'
-                    f'       MAX(ST_YMax(ST_GeomFromWKB("{geom_col}")))'
-                    f' FROM _extent_tmp'
+        # Compute extent
+        try:
+            col_type_upper = ""
+            for cn, ct, *_ in cols:
+                if cn == geom_col:
+                    col_type_upper = ct.upper()
+                    break
+            if "GEOMETRY" in col_type_upper:
+                extent_row = conn.execute(
+                    f'SELECT ST_XMin(e), ST_YMin(e), ST_XMax(e), ST_YMax(e) '
+                    f'FROM (SELECT ST_Extent("{geom_col}") AS e FROM {table_ref})'
                 ).fetchone()
-                if row and row[0] is not None:
-                    extent = {
-                        "xmin": row[0], "ymin": row[1],
-                        "xmax": row[2], "ymax": row[3],
-                    }
-            except Exception as e:
-                logger.warning("Failed to compute extent for %s: %s", table_identifier, e)
+            else:
+                extent_row = conn.execute(
+                    f'SELECT MIN(ST_XMin(g)), MIN(ST_YMin(g)), '
+                    f'MAX(ST_XMax(g)), MAX(ST_YMax(g)) '
+                    f'FROM (SELECT ST_GeomFromWKB("{geom_col}") AS g FROM {table_ref})'
+                ).fetchone()
+            if extent_row and extent_row[0] is not None:
+                extent = {
+                    "xmin": extent_row[0], "ymin": extent_row[1],
+                    "xmax": extent_row[2], "ymax": extent_row[3],
+                }
+        except Exception as e:
+            logger.warning("Failed to compute extent for %s: %s", table_ref, e)
     except Exception:
         pass
 
     # Adaptive max record count: fewer for polygons (heavy geometry)
-    # 500 for polygons keeps PBF serialization under ~1s per request
     max_records = 500 if geometry_type in ("Polygon", "MultiPolygon") else 10000
 
     result = FeatureSchema(
-        table_identifier=table_identifier,
+        table_identifier=table_ref,
         geometry_column=geom_col,
         geometry_type=geometry_type,
         srid=4326,
@@ -183,155 +183,56 @@ def get_table_schema(table: Table) -> FeatureSchema:
         id_field=id_field,
         max_record_count=max_records,
     )
-    _schema_cache[table_identifier] = result
+    _schema_cache[table_ref] = result
     return result
 
 
-def _get_cached_arrow_table(table: Table) -> pa.Table:
-    """Load the Arrow table from cache or scan from Iceberg.
-
-    Caches the full table scan in memory, keyed by table identifier
-    and snapshot ID. This avoids repeated S3 reads for the same data.
-
-    Also computes and caches bbox pre-filter columns (__bbox_xmin, etc.)
-    using DuckDB for fast spatial pre-filtering on subsequent queries.
-    These columns enable cheap numeric comparisons before the expensive
-    ST_GeomFromWKB + ST_Intersects check.
+def query_features(table_ref: str, params: QueryParams) -> QueryResult:
     """
-    raw_name = table.name()
-    if isinstance(raw_name, (tuple, list)):
-        table_id = ".".join(str(part) for part in raw_name)
-    else:
-        table_id = str(raw_name)
-
-    snapshot = table.current_snapshot()
-    snapshot_id = snapshot.snapshot_id if snapshot else 0
-    cache_key = (table_id, snapshot_id)
-
-    with _arrow_cache_lock:
-        if cache_key in _arrow_cache:
-            return _arrow_cache[cache_key]
-
-    # Not cached — scan from Iceberg
-    arrow_table = table.scan(row_filter=AlwaysTrue()).to_arrow()
-
-    # Compute bbox pre-filter columns for spatial queries
-    arrow_table = _add_bbox_columns(arrow_table)
-
-    with _arrow_cache_lock:
-        # Evict old snapshots of the same table
-        for key in list(_arrow_cache):
-            if key[0] == table_id and key != cache_key:
-                del _arrow_cache[key]
-        _arrow_cache[cache_key] = arrow_table
-
-    logger.info("Cached %s (snapshot %s): %d rows", table_id, snapshot_id, arrow_table.num_rows)
-    return arrow_table
-
-
-def _add_bbox_columns(arrow_table: pa.Table) -> pa.Table:
-    """Pre-compute bounding box columns for fast spatial pre-filtering.
-
-    Adds __bbox_xmin, __bbox_ymin, __bbox_xmax, __bbox_ymax columns
-    to the Arrow table using DuckDB. This avoids calling ST_GeomFromWKB
-    on every row during every spatial query — instead, cheap numeric
-    comparisons filter out most non-matching rows first.
-    """
-    import time as _time
-
-    geom_col = _detect_geometry_column(arrow_table.schema)
-    logger.info(
-        "Computing bbox columns for %d rows (geom_col=%s, HAS_SPATIAL=%s)",
-        arrow_table.num_rows, geom_col, _HAS_SPATIAL,
-    )
-
-    if not _HAS_SPATIAL:
-        # Try to init spatial if not yet checked
-        try:
-            conn = _get_connection()
-        except Exception:
-            pass
-
-    if not _HAS_SPATIAL:
-        logger.warning("Skipping bbox columns: DuckDB spatial not available")
-        return arrow_table
-
-    try:
-        t0 = _time.perf_counter()
-        conn = _get_connection()
-        conn.register("_bbox_tmp", arrow_table)
-        result = conn.execute(f"""
-            SELECT *,
-                ST_XMin(ST_GeomFromWKB("{geom_col}")) AS __bbox_xmin,
-                ST_YMin(ST_GeomFromWKB("{geom_col}")) AS __bbox_ymin,
-                ST_XMax(ST_GeomFromWKB("{geom_col}")) AS __bbox_xmax,
-                ST_YMax(ST_GeomFromWKB("{geom_col}")) AS __bbox_ymax
-            FROM _bbox_tmp
-        """).fetch_arrow_table()
-        elapsed = _time.perf_counter() - t0
-        logger.info(
-            "Added bbox pre-filter columns to %d rows in %.1fs",
-            result.num_rows, elapsed,
-        )
-        return result
-    except Exception as e:
-        logger.warning("Failed to add bbox columns: %s", e)
-        return arrow_table
-
-
-def query_features(table: Table, params: QueryParams) -> QueryResult:
-    """
-    Execute a spatial query against an Iceberg table.
+    Execute a spatial query against an Iceberg table via the DuckDB catalog.
 
     Pipeline:
-    1. Build PyIceberg row_filter from bbox (for partition pruning)
-    2. Execute scan -> Arrow table
-    3. Register Arrow table in DuckDB
-    4. Build and execute DuckDB SQL with spatial filters,
-       attribute filters, field selection, sorting, pagination
-    5. Return QueryResult with Arrow table of matching features
+    1. Query the attached Iceberg catalog table directly
+    2. Build DuckDB SQL with spatial filters, attribute filters,
+       field selection, sorting, pagination
+    3. Return QueryResult with Arrow table of matching features
     """
     conn = _get_connection()
 
-    # --- Step 1: Load Arrow table (cached after first scan) ---
-    arrow_table = _get_cached_arrow_table(table)
+    # Get column info for building queries
+    cols = conn.execute(f"DESCRIBE {table_ref}").fetchall()
+    col_names = [c[0] for c in cols]
+    col_types = {c[0]: c[1] for c in cols}
 
-    if arrow_table.num_rows == 0:
-        return QueryResult.empty(params)
+    # Detect geometry column
+    geom_col = _detect_geom_from_cols(cols)
+    geom_type_upper = col_types.get(geom_col, "BLOB").upper()
+    is_native_geom = "GEOMETRY" in geom_type_upper
 
-    # --- Step 2: Register in DuckDB ---
-    conn.register("features", arrow_table)
+    schema_info = get_table_schema(table_ref)
 
-    # --- Step 3: Build SQL ---
-    #
-    # All queries use a CTE that assigns deterministic global OIDs first,
-    # then applies filters on the numbered result. This guarantees that
-    # a feature's __oid is always the same regardless of which query
-    # returns it (critical for QGIS identify: returnIdsOnly + objectIds).
-    geom_col = _detect_geometry_column(arrow_table.schema)
-    schema_info = get_table_schema(table)
+    # Build a minimal Arrow schema for _build_select
+    arrow_fields = []
+    for c_name, c_type, *_ in cols:
+        arrow_fields.append(pa.field(c_name, pa.utf8()))  # type doesn't matter for _build_select
+    arrow_schema = pa.schema(arrow_fields)
 
     where_clauses = []
     needs_shapely_spatial_filter = False
     shapely_filter_geom = None
 
     # Spatial filter — bbox
-    # Use bbox pre-filter columns if available (numeric comparisons are
-    # ~100x faster than ST_GeomFromWKB + ST_Intersects on every row).
-    has_bbox_cols = "__bbox_xmin" in [f.name for f in arrow_table.schema]
     if params.bbox:
         xmin, ymin, xmax, ymax = params.bbox
         if _HAS_SPATIAL:
-            if has_bbox_cols:
-                # Fast bbox pre-filter: eliminates most rows cheaply
+            if is_native_geom:
                 where_clauses.append(
-                    f"__bbox_xmax >= {xmin} AND __bbox_xmin <= {xmax} "
-                    f"AND __bbox_ymax >= {ymin} AND __bbox_ymin <= {ymax}"
+                    f'ST_Intersects("{geom_col}", '
+                    f"ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
                 )
             else:
-                # Fallback: expensive per-row WKB parsing
                 where_clauses.append(
-                    f"ST_Intersects(ST_GeomFromWKB(\"{geom_col}\"), "
+                    f'ST_Intersects(ST_GeomFromWKB("{geom_col}"), '
                     f"ST_MakeEnvelope({xmin}, {ymin}, {xmax}, {ymax}))"
                 )
         else:
@@ -346,10 +247,16 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
                 "contains": "ST_Contains",
                 "within": "ST_Within",
             }.get(params.spatial_rel, "ST_Intersects")
-            where_clauses.append(
-                f"{spatial_fn}(ST_GeomFromWKB(\"{geom_col}\"), "
-                f"ST_GeomFromText('{params.geometry_filter}'))"
-            )
+            if is_native_geom:
+                where_clauses.append(
+                    f'{spatial_fn}("{geom_col}", '
+                    f"ST_GeomFromText('{params.geometry_filter}'))"
+                )
+            else:
+                where_clauses.append(
+                    f'{spatial_fn}(ST_GeomFromWKB("{geom_col}"), '
+                    f"ST_GeomFromText('{params.geometry_filter}'))"
+                )
         else:
             from shapely import wkt as wkt_mod
 
@@ -364,10 +271,10 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
     # Global OID CTE — used by all query paths below
-    numbered_cte = """
+    numbered_cte = f"""
         WITH numbered AS (
             SELECT (ROW_NUMBER() OVER () - 1)::INTEGER AS __oid, *
-            FROM features
+            FROM {table_ref}
         )
     """
 
@@ -375,7 +282,7 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
     if params.return_count_only:
         if needs_shapely_spatial_filter and shapely_filter_geom is not None:
             all_arrow = conn.execute(
-                f"{numbered_cte} SELECT \"{geom_col}\" FROM numbered WHERE {where_sql}"
+                f'{numbered_cte} SELECT "{geom_col}" FROM numbered WHERE {where_sql}'
             ).fetch_arrow_table()
             filtered = _apply_shapely_spatial_filter(
                 all_arrow, geom_col, shapely_filter_geom, params.spatial_rel
@@ -386,10 +293,11 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
         ).fetchone()
         return QueryResult(count=result[0], features=None)
 
-    # IDs-only — return global OIDs matching the filter
+    # IDs-only — return global OIDs and the real ID field
     if params.return_ids_only:
+        id_field = schema_info.id_field
         result_arrow = conn.execute(
-            f"{numbered_cte} SELECT __oid FROM numbered WHERE {where_sql}"
+            f'{numbered_cte} SELECT __oid, "{id_field}" FROM numbered WHERE {where_sql}'
         ).fetch_arrow_table()
         return QueryResult(
             features=result_arrow,
@@ -399,7 +307,7 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
 
     # objectIds filter — fetch specific features by global OID
     if params.object_ids is not None:
-        select_clause = _build_select(params, geom_col, arrow_table.schema)
+        select_clause = _build_select(params, geom_col, arrow_schema)
         oid_list = ",".join(str(int(oid)) for oid in params.object_ids)
         sql = f"""
             {numbered_cte}
@@ -416,7 +324,7 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
         )
 
     # Build SELECT
-    select_clause = _build_select(params, geom_col, arrow_table.schema)
+    select_clause = _build_select(params, geom_col, arrow_schema)
 
     # Order
     order_sql = ""
@@ -439,13 +347,13 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
 
     result_arrow = conn.execute(sql).fetch_arrow_table()
 
-    # --- Step 4: Apply Shapely spatial filter if DuckDB spatial not available ---
+    # Apply Shapely spatial filter if DuckDB spatial not available
     if needs_shapely_spatial_filter and shapely_filter_geom is not None:
         result_arrow = _apply_shapely_spatial_filter(
             result_arrow, geom_col, shapely_filter_geom, params.spatial_rel
         )
 
-    # --- Step 5: Check if more results exist (exceededTransferLimit) ---
+    # Check if more results exist (exceededTransferLimit)
     exceeded = False
     if params.limit and not needs_shapely_spatial_filter:
         count_result = conn.execute(
@@ -461,6 +369,21 @@ def query_features(table: Table, params: QueryParams) -> QueryResult:
         exceeded_transfer_limit=exceeded,
         count=result_arrow.num_rows,
     )
+
+
+def _detect_geom_from_cols(cols) -> str:
+    """Find geometry column from DESCRIBE output."""
+    geom_indicators = {"geometry", "geom", "wkb_geometry", "shape", "the_geom"}
+    for col_name, col_type, *_ in cols:
+        ct = col_type.lower()
+        if col_name.lower() in geom_indicators and ("geometry" in ct or "blob" in ct or "binary" in ct):
+            return col_name
+    # Fallback: first GEOMETRY or BLOB column
+    for col_name, col_type, *_ in cols:
+        ct = col_type.lower()
+        if "geometry" in ct or "blob" in ct:
+            return col_name
+    return "geometry"
 
 
 def _detect_geometry_column(schema: pa.Schema) -> str:
@@ -495,35 +418,16 @@ def _detect_geometry_column(schema: pa.Schema) -> str:
     return "geometry"
 
 
-def _detect_geometry_column_from_iceberg(schema) -> str:
-    """Find geometry column from an Iceberg schema."""
-    known_names = {"geometry", "geom", "wkb_geometry", "shape", "location"}
-
-    for field in schema.fields:
-        field_type = str(field.field_type).lower()
-        if field.name.lower() in known_names and "binary" in field_type:
-            return field.name
-
-    # Fallback: first binary column
-    for field in schema.fields:
-        field_type = str(field.field_type).lower()
-        if "binary" in field_type:
-            return field.name
-
-    return "geometry"
-
-
-def _detect_id_field(schema) -> str:
-    """Detect the ID field from an Iceberg schema."""
+def _detect_id_field_from_cols(cols) -> str:
+    """Detect the ID field from DESCRIBE output."""
     known_id_names = {"objectid", "id", "fid", "gid", "ogc_fid"}
-    for field in schema.fields:
-        if field.name.lower() in known_id_names:
-            return field.name
+    for col_name, col_type, *_ in cols:
+        if col_name.lower() in known_id_names:
+            return col_name
     # Return first integer field as fallback
-    for field in schema.fields:
-        field_type = str(field.field_type).lower()
-        if "int" in field_type:
-            return field.name
+    for col_name, col_type, *_ in cols:
+        if "int" in col_type.lower():
+            return col_name
     return "objectid"
 
 
@@ -633,16 +537,10 @@ def _apply_shapely_spatial_filter(
     return arrow_table.take(keep_indices)
 
 
-# Internal columns that should never appear in query results
-_INTERNAL_COLS = {"__bbox_xmin", "__bbox_ymin", "__bbox_xmax", "__bbox_ymax"}
-
-
 # Columns that _build_select should never include in the SELECT clause.
 # __oid is always added by the query template (SELECT __oid, ...) so must
-# not be duplicated. __bbox_* are internal pre-filter columns.
-_EXCLUDED_FROM_SELECT = {
-    "__oid", "__bbox_xmin", "__bbox_ymin", "__bbox_xmax", "__bbox_ymax",
-}
+# not be duplicated.
+_EXCLUDED_FROM_SELECT = {"__oid"}
 
 
 def _build_select(
@@ -650,8 +548,7 @@ def _build_select(
 ) -> str:
     """Build SELECT clause from requested fields.
 
-    Excludes __oid (already in the query template) and internal
-    __bbox_* columns that should never be returned to clients.
+    Excludes __oid (already in the query template).
     """
     if params.out_fields == "*" or not params.out_fields:
         if not params.return_geometry:

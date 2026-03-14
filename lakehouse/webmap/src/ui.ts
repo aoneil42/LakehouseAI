@@ -899,6 +899,8 @@ export interface ActiveLayerCallbacks {
   onZoom?: (ns: string, layer: string) => void;
   onOpenAttributeTable?: (ns: string, layer: string) => void;
   onOpenSymbology?: (ns: string, layer: string) => void;
+  onDeleteScratch?: (key: string) => void;
+  onSaveScratch?: (key: string) => void;
 }
 
 let activeLayerCallbacks: ActiveLayerCallbacks | null = null;
@@ -1008,6 +1010,7 @@ function wireLegendEvents(container: HTMLElement): void {
     const ns = key.slice(0, slashIdx);
     const table = key.slice(slashIdx + 1);
     const ogcCollection = `${ns.replace(/\./g, "-")}-${table}`;
+    const isScratch = ns.startsWith("_scratch_");
 
     const menu = document.createElement("div");
     menu.className = "layer-context-menu";
@@ -1017,6 +1020,12 @@ function wireLegendEvents(container: HTMLElement): void {
       <a href="#" class="ctx-zoom">Zoom to extent</a>
       <a href="#" class="ctx-attr-table">Open attribute table</a>
       <a href="#" class="ctx-symbology">Style layer\u2026</a>
+      ${isScratch ? `
+        <div class="ctx-divider"></div>
+        <div class="ctx-label">Scratch Layer</div>
+        <a href="#" class="ctx-save-scratch">Save to permanent layer\u2026</a>
+        <a href="#" class="ctx-delete-scratch">Delete from lakehouse</a>
+      ` : ''}
       <div class="ctx-divider"></div>
       <div class="ctx-label">API Endpoints</div>
       <a href="/api/features/${ns}/${table}?limit=10" target="_blank">Feature API</a>
@@ -1041,6 +1050,16 @@ function wireLegendEvents(container: HTMLElement): void {
       ev.preventDefault();
       dismissContextMenu();
       activeLayerCallbacks?.onOpenSymbology?.(ns, table);
+    });
+    menu.querySelector(".ctx-save-scratch")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      activeLayerCallbacks?.onSaveScratch?.(key);
+    });
+    menu.querySelector(".ctx-delete-scratch")?.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      activeLayerCallbacks?.onDeleteScratch?.(key);
     });
     document.body.appendChild(menu);
     activeContextMenu = menu;

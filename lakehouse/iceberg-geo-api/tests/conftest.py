@@ -1,65 +1,52 @@
 """
 Shared test fixtures.
 
-Creates an in-memory Iceberg catalog with sample tables
-containing geometry columns for testing all components.
+Creates DuckDB tables with sample geometry data for testing all components.
 """
 
-import os
 import random
-import tempfile
 
+import duckdb
 import pyarrow as pa
 import pytest
-from pyiceberg.catalog.sql import SqlCatalog
 from shapely import wkb as wkb_mod
 from shapely.geometry import Point, box
 
 
 @pytest.fixture(scope="session")
-def warehouse_path(tmp_path_factory):
-    """Create a temporary warehouse directory."""
-    return str(tmp_path_factory.mktemp("warehouse"))
+def test_connection():
+    """Create a DuckDB connection with spatial extension and test tables."""
+    conn = duckdb.connect(database=":memory:")
+    conn.execute("INSTALL spatial; LOAD spatial;")
+    conn.execute("SET geometry_always_xy = true")
+    conn.execute("CREATE SCHEMA test")
 
+    _create_points_table(conn)
+    _create_polygons_table(conn)
 
-@pytest.fixture(scope="session")
-def iceberg_catalog(warehouse_path):
-    """Create a temporary SQLite-backed Iceberg catalog with test data."""
-    catalog = SqlCatalog(
-        "test",
-        **{
-            "uri": f"sqlite:///{warehouse_path}/catalog.db",
-            "warehouse": f"file://{warehouse_path}",
-        },
-    )
-    catalog.create_namespace("test")
-
-    _create_points_table(catalog)
-    _create_polygons_table(catalog)
-
-    return catalog
+    return conn
 
 
 @pytest.fixture(autouse=True)
-def setup_catalog(iceberg_catalog):
-    """Set the test catalog as the global catalog for all tests."""
+def setup_catalog(test_connection):
+    """Set the test connection as the global connection for all tests."""
     from iceberg_geo.query.catalog import set_catalog, reset_catalog
 
-    set_catalog(iceberg_catalog)
+    set_catalog(test_connection)
     yield
     reset_catalog()
 
 
 @pytest.fixture
-def points_table(iceberg_catalog):
-    """Load the test points table."""
-    return iceberg_catalog.load_table("test.sensor_points")
+def points_table():
+    """Return the qualified name for the test points table."""
+    return "test.sensor_points"
 
 
 @pytest.fixture
-def polygons_table(iceberg_catalog):
-    """Load the test polygons table."""
-    return iceberg_catalog.load_table("test.parcels")
+def polygons_table():
+    """Return the qualified name for the test polygons table."""
+    return "test.parcels"
 
 
 @pytest.fixture
@@ -70,7 +57,7 @@ def sample_query_params():
     return QueryParams(limit=10)
 
 
-def _create_points_table(catalog):
+def _create_points_table(conn):
     """Create test.sensor_points with 100 random points."""
     random.seed(42)
 
@@ -95,12 +82,17 @@ def _create_points_table(catalog):
         }
     )
 
-    catalog.create_table("test.sensor_points", schema=table.schema)
-    iceberg_table = catalog.load_table("test.sensor_points")
-    iceberg_table.append(table)
+    conn.register("_tmp_points", table)
+    conn.execute("""
+        CREATE TABLE test.sensor_points AS
+        SELECT objectid, sensor_id, temperature,
+               ST_GeomFromWKB(geometry) AS geometry
+        FROM _tmp_points
+    """)
+    conn.unregister("_tmp_points")
 
 
-def _create_polygons_table(catalog):
+def _create_polygons_table(conn):
     """Create test.parcels with 50 rectangular polygons."""
     random.seed(43)
 
@@ -128,6 +120,11 @@ def _create_polygons_table(catalog):
         }
     )
 
-    catalog.create_table("test.parcels", schema=table.schema)
-    iceberg_table = catalog.load_table("test.parcels")
-    iceberg_table.append(table)
+    conn.register("_tmp_parcels", table)
+    conn.execute("""
+        CREATE TABLE test.parcels AS
+        SELECT objectid, parcel_id, area_sqm, zoning,
+               ST_GeomFromWKB(geometry) AS geometry
+        FROM _tmp_parcels
+    """)
+    conn.unregister("_tmp_parcels")

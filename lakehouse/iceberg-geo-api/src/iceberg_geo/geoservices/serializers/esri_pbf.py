@@ -13,6 +13,8 @@ Key differences from JSON encoding:
 Performance notes:
 - Uses column-based Arrow access instead of to_pydict() to avoid
   materializing all data (especially large WKB blobs) at once
+- Direct WKB parsing with struct.unpack() for coordinate extraction
+  when no simplification is needed (avoids Shapely object allocation)
 - Supports geometry simplification via max_allowable_offset to
   dramatically reduce coordinate counts for polygon-heavy layers
 - Field type lookup is pre-computed as a dict (O(1) per access)
@@ -22,9 +24,8 @@ References:
 """
 
 import logging
+import struct
 from typing import Optional
-
-from shapely import wkb
 
 from iceberg_geo.query.models import FeatureSchema, QueryResult
 
@@ -40,6 +41,14 @@ except ImportError:
 
 # Quantization resolution — controls coordinate precision
 QUANTIZE_RESOLUTION = 1e8
+
+# WKB type constants (little-endian)
+_WKB_POINT = 1
+_WKB_LINESTRING = 2
+_WKB_POLYGON = 3
+_WKB_MULTIPOINT = 4
+_WKB_MULTILINESTRING = 5
+_WKB_MULTIPOLYGON = 6
 
 
 def serialize(
@@ -111,7 +120,8 @@ def serialize(
     _build_fields_for_result(feature_result, schema, present_field_names)
 
     # --- Geometry processing (skipped when returnGeometry=false) ---
-    geometries = None
+    use_simplify = bool(max_allowable_offset and max_allowable_offset > 0)
+    parsed_geoms = None
     x_min = 0.0
     y_min = 0.0
     x_scale = 1.0
@@ -120,39 +130,34 @@ def serialize(
     if has_geometry:
         geom_data = result.features.column(geom_col).to_pylist()
 
-        # First pass: parse WKB, simplify, collect bounds
-        geometries = []
+        if use_simplify:
+            # Shapely path — needed for simplification
+            parsed_geoms = _parse_geometries_shapely(
+                geom_data, max_allowable_offset
+            )
+        else:
+            # Fast path — direct WKB parsing, no Shapely
+            parsed_geoms = _parse_geometries_wkb(geom_data)
+
+        # Compute bounds from parsed geometries
         g_x_min = float("inf")
         g_y_min = float("inf")
         g_x_max = float("-inf")
         g_y_max = float("-inf")
         has_any_geom = False
 
-        for wkb_bytes in geom_data:
-            if wkb_bytes:
-                geom = wkb.loads(wkb_bytes)
-                # Apply geometry simplification if offset is provided
-                if max_allowable_offset and max_allowable_offset > 0:
-                    geom = geom.simplify(
-                        max_allowable_offset, preserve_topology=True
-                    )
-                    # simplify() can return empty geometry for tiny features
-                    if geom.is_empty:
-                        geometries.append(None)
-                        continue
-                geometries.append(geom)
-                bx0, by0, bx1, by1 = geom.bounds
-                if bx0 < g_x_min:
-                    g_x_min = bx0
-                if by0 < g_y_min:
-                    g_y_min = by0
-                if bx1 > g_x_max:
-                    g_x_max = bx1
-                if by1 > g_y_max:
-                    g_y_max = by1
+        for pg in parsed_geoms:
+            if pg is not None:
+                bounds = pg["bounds"]
+                if bounds[0] < g_x_min:
+                    g_x_min = bounds[0]
+                if bounds[1] < g_y_min:
+                    g_y_min = bounds[1]
+                if bounds[2] > g_x_max:
+                    g_x_max = bounds[2]
+                if bounds[3] > g_y_max:
+                    g_y_max = bounds[3]
                 has_any_geom = True
-            else:
-                geometries.append(None)
 
         if not has_any_geom:
             return _serialize_empty(result, schema)
@@ -207,11 +212,13 @@ def serialize(
             )
 
         # Geometry (only when returnGeometry=true)
-        if geometries is not None:
-            geom = geometries[i]
-            if geom is not None:
-                _encode_geometry(
-                    feature.geometry, geom, x_min, y_min, x_scale, y_scale
+        if parsed_geoms is not None:
+            pg = parsed_geoms[i]
+            if pg is not None:
+                _encode_geometry_from_coord_arrays(
+                    feature.geometry,
+                    pg["coord_arrays"],
+                    x_min, y_min, x_scale, y_scale,
                 )
 
     feature_result.exceededTransferLimit = result.exceeded_transfer_limit
@@ -219,25 +226,163 @@ def serialize(
     return fc.SerializeToString()
 
 
-def _encode_geometry(
+def _parse_geometries_wkb(geom_data: list) -> list:
+    """Parse WKB bytes directly with struct.unpack — no Shapely.
+
+    Returns list of dicts with 'coord_arrays' and 'bounds', or None for
+    null geometries.
+    """
+    results = []
+    for wkb_bytes in geom_data:
+        if wkb_bytes:
+            try:
+                coord_arrays, bounds = _parse_wkb(wkb_bytes)
+                results.append({"coord_arrays": coord_arrays, "bounds": bounds})
+            except (struct.error, IndexError):
+                # Fallback: skip unparseable geometry
+                results.append(None)
+        else:
+            results.append(None)
+    return results
+
+
+def _parse_geometries_shapely(geom_data: list, max_offset: float) -> list:
+    """Parse with Shapely — used when simplification is needed.
+
+    Returns list of dicts with 'coord_arrays' and 'bounds', or None.
+    """
+    from shapely import wkb
+
+    results = []
+    for wkb_bytes in geom_data:
+        if wkb_bytes:
+            geom = wkb.loads(wkb_bytes)
+            if max_offset and max_offset > 0:
+                geom = geom.simplify(max_offset, preserve_topology=True)
+                if geom.is_empty:
+                    results.append(None)
+                    continue
+            coord_arrays = _extract_coord_arrays(geom)
+            bounds = geom.bounds  # (minx, miny, maxx, maxy)
+            results.append({"coord_arrays": coord_arrays, "bounds": bounds})
+        else:
+            results.append(None)
+    return results
+
+
+def _parse_wkb(data: bytes):
+    """Parse WKB bytes into coord_arrays and bounds.
+
+    Returns (coord_arrays, (xmin, ymin, xmax, ymax)).
+    coord_arrays is a list of rings/paths, each a list of (x, y) tuples.
+    """
+    if isinstance(data, memoryview):
+        data = bytes(data)
+
+    xmin = float("inf")
+    ymin = float("inf")
+    xmax = float("-inf")
+    ymax = float("-inf")
+
+    def update_bounds(x, y):
+        nonlocal xmin, ymin, xmax, ymax
+        if x < xmin:
+            xmin = x
+        if y < ymin:
+            ymin = y
+        if x > xmax:
+            xmax = x
+        if y > ymax:
+            ymax = y
+
+    def read_point(buf, offset):
+        x, y = struct.unpack_from("<dd", buf, offset)
+        update_bounds(x, y)
+        return (x, y), offset + 16
+
+    def read_ring(buf, offset):
+        (n_points,) = struct.unpack_from("<I", buf, offset)
+        offset += 4
+        coords = []
+        for _ in range(n_points):
+            pt, offset = read_point(buf, offset)
+            coords.append(pt)
+        return coords, offset
+
+    def read_geom(buf, offset):
+        """Read a geometry at the given offset. Returns (coord_arrays, offset)."""
+        # Byte order
+        _bo = buf[offset]
+        offset += 1
+        # Type
+        (wkb_type,) = struct.unpack_from("<I", buf, offset)
+        offset += 4
+        # Mask off SRID/Z/M flags
+        base_type = wkb_type & 0xFF
+
+        if base_type == _WKB_POINT:
+            pt, offset = read_point(buf, offset)
+            return [[pt]], offset
+
+        elif base_type == _WKB_LINESTRING:
+            ring, offset = read_ring(buf, offset)
+            return [ring], offset
+
+        elif base_type == _WKB_POLYGON:
+            (n_rings,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            rings = []
+            for _ in range(n_rings):
+                ring, offset = read_ring(buf, offset)
+                rings.append(ring)
+            return rings, offset
+
+        elif base_type == _WKB_MULTIPOINT:
+            (n_geoms,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            all_arrays = []
+            for _ in range(n_geoms):
+                arrays, offset = read_geom(buf, offset)
+                all_arrays.extend(arrays)
+            return all_arrays, offset
+
+        elif base_type == _WKB_MULTILINESTRING:
+            (n_geoms,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            all_arrays = []
+            for _ in range(n_geoms):
+                arrays, offset = read_geom(buf, offset)
+                all_arrays.extend(arrays)
+            return all_arrays, offset
+
+        elif base_type == _WKB_MULTIPOLYGON:
+            (n_geoms,) = struct.unpack_from("<I", buf, offset)
+            offset += 4
+            all_arrays = []
+            for _ in range(n_geoms):
+                arrays, offset = read_geom(buf, offset)
+                all_arrays.extend(arrays)
+            return all_arrays, offset
+
+        else:
+            raise ValueError(f"Unsupported WKB type: {wkb_type}")
+
+    coord_arrays, _ = read_geom(data, 0)
+    return coord_arrays, (xmin, ymin, xmax, ymax)
+
+
+def _encode_geometry_from_coord_arrays(
     pb_geom,
-    shapely_geom,
+    coord_arrays: list,
     x_translate: float,
     y_translate: float,
     x_scale: float,
     y_scale: float,
 ):
-    """
-    Encode a Shapely geometry into an Esri PBF Geometry message.
+    """Encode coord_arrays into an Esri PBF Geometry message.
 
-    Steps:
-    1. Extract coordinate rings/paths from shapely geometry
-    2. Quantize to integers
-    3. Delta-encode
-    4. Set lengths + coords arrays
+    coord_arrays: list of rings/paths, each a list of (x, y) tuples.
     """
-    coord_arrays = _extract_coord_arrays(shapely_geom)
-
     all_delta_coords = []
     lengths = []
 
@@ -246,10 +391,8 @@ def _encode_geometry(
         prev_x, prev_y = 0, 0
 
         for wx, wy in ring_coords:
-            # Quantize
             qx = round((wx - x_translate) / x_scale)
             qy = round((wy - y_translate) / y_scale)
-            # Delta encode
             dx = qx - prev_x
             dy = qy - prev_y
             all_delta_coords.extend([dx, dy])
@@ -263,6 +406,7 @@ def _extract_coord_arrays(geom):
     """Extract coordinate arrays from a Shapely geometry.
 
     Returns list of rings/paths, where each is a list of (x, y) tuples.
+    Used by the Shapely simplification path.
     """
     geom_type = geom.geom_type
 

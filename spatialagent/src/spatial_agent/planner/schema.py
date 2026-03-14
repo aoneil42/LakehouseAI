@@ -1,11 +1,15 @@
 import logging
 import time
 
+from ..config import settings
 from ..session import SessionState
 
 logger = logging.getLogger(__name__)
 
 SCHEMA_CACHE_TTL = 300  # 5 minutes
+
+# Columns likely to hold categorical values that help the LLM pick the right table.
+SAMPLE_COLS = {"class", "subtype", "basic_category", "type", "category"}
 
 
 def _is_error(result: dict) -> bool:
@@ -19,34 +23,70 @@ class SchemaBuilder:
     def __init__(self, mcp_client):
         self.mcp = mcp_client
 
-    async def build_context(self, message: str, session: SessionState) -> str:
+    async def build_context(
+        self,
+        message: str,
+        session: SessionState,
+        active_namespaces: list[str] | None = None,
+    ) -> str:
         now = time.time()
-        tables = await self._get_tables(session, now)
+        all_tables = await self._get_tables(session, now)
+        # Exclude scratch/temp tables from LLM context
+        tables = [
+            t for t in all_tables
+            if not t["namespace"].startswith(settings.scratch_prefix)
+        ]
         if not tables:
             return "No tables available."
 
-        matched = self._match_tables(message, tables)
-        if not matched:
-            matched = tables  # fall back to all tables
+        # If the webmap has active layers, prefer those namespaces
+        if active_namespaces:
+            ns_tables = [
+                t for t in tables if t["namespace"] in active_namespaces
+            ]
+            if ns_tables:
+                matched = ns_tables
+            else:
+                matched = self._match_tables(message, tables)
+                if not matched:
+                    matched = tables
+        else:
+            matched = self._match_tables(message, tables)
+            if not matched:
+                matched = tables  # fall back to all non-scratch tables
 
         lines = ["Available tables:"]
         for table_info in matched:
             full_name = table_info["full_name"]
             desc = await self._describe(full_name, session, now)
             if desc:
+                # MCP returns rows with column_name/column_type keys
+                columns = desc.get("rows", desc.get("columns", []))
                 cols = ", ".join(
-                    f"{c['name']} {c['type']}" for c in desc.get("columns", [])
+                    f"{c.get('column_name', c.get('name', '?'))} "
+                    f"{c.get('column_type', c.get('type', '?'))}"
+                    for c in columns
                 )
                 line = f"  {full_name} ({cols})"
                 geom_cols = [
-                    c["name"]
-                    for c in desc.get("columns", [])
-                    if "geom" in c.get("type", "").lower()
+                    c.get("column_name", c.get("name", ""))
+                    for c in columns
+                    if c.get("is_geometry")
+                    or "geom" in c.get("column_type", c.get("type", "")).lower()
                 ]
                 if geom_cols:
                     bbox = await self._get_bbox(full_name)
                     bbox_str = f" | bbox: {bbox}" if bbox else ""
                     line += f"\n    → geometry: {', '.join(geom_cols)}{bbox_str}"
+                # Sample categorical columns to help LLM pick the right table
+                for c in columns:
+                    col_name = c.get("column_name", c.get("name", ""))
+                    if col_name.lower() in SAMPLE_COLS:
+                        values = await self._sample_values(
+                            full_name, col_name, session, now
+                        )
+                        if values:
+                            line += f"\n    → {col_name} values: {', '.join(values)}"
                 lines.append(line)
             else:
                 lines.append(f"  {full_name}")
@@ -100,6 +140,31 @@ class SchemaBuilder:
         if not _is_error(result):
             return result.get("bbox")
         return None
+
+    async def _sample_values(
+        self, full_name: str, col_name: str, session: SessionState, now: float
+    ) -> list[str]:
+        """Return up to 15 distinct values for a categorical column."""
+        cache_key = f"_sample_{full_name}.{col_name}"
+        if (
+            cache_key in session.schema_cache
+            and now - session.schema_cache_ts < SCHEMA_CACHE_TTL
+        ):
+            return session.schema_cache[cache_key]
+
+        sql = (
+            f'SELECT DISTINCT "{col_name}" FROM {full_name} '
+            f'WHERE "{col_name}" IS NOT NULL LIMIT 15'
+        )
+        result = await self.mcp.call_tool("query", {"sql": sql})
+        values: list[str] = []
+        if not _is_error(result):
+            for row in result.get("rows", []):
+                v = row.get(col_name)
+                if v is not None:
+                    values.append(str(v))
+        session.schema_cache[cache_key] = values
+        return values
 
     def _match_tables(self, message: str, tables: list) -> list:
         words = set(message.lower().split())

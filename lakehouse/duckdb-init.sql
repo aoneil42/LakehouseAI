@@ -8,6 +8,8 @@ LOAD iceberg;
 INSTALL spatial;
 LOAD spatial;
 
+SET geometry_always_xy = true;
+
 -- S3 credentials for direct file access (GeoParquet on Garage)
 -- Values are templated at runtime by duckdb-entrypoint.sh
 CREATE SECRET garage_s3 (

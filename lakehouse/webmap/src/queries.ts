@@ -1,15 +1,13 @@
-import { loadGeoParquet } from "./geoarrow";
+import { loadGeoData } from "./geoarrow";
 import type { Table } from "apache-arrow";
 
 const API_BASE = "/api";
 
-/** Feature limits per geometry type.
+/** Maximum features fetched per layer, regardless of geometry type.
  *  The GeoArrow pipeline handles large datasets well; the real OOM guard is
  *  MAX_RESPONSE_BYTES (256 MB) in geoarrow.ts.  Earcut cooldowns in main.ts
  *  prevent moveend reloads from restarting triangulation mid-flight. */
-export const MAX_FEATURES_POINT = 200_000;
-export const MAX_FEATURES_LINE = 200_000;
-export const MAX_FEATURES_POLYGON = 2_000_000;
+export const MAX_FEATURES_PER_LAYER = 500_000;
 
 export type Bbox = [number, number, number, number];
 
@@ -43,7 +41,7 @@ export async function loadLayer(
   namespace: string,
   layer: string,
   bbox?: Bbox,
-  maxFeatures: number = MAX_FEATURES_POINT,
+  maxFeatures: number = MAX_FEATURES_PER_LAYER,
   simplify?: number,
   aggregate?: { resolution: number },
   timeFilter?: TimeFilter
@@ -64,7 +62,8 @@ export async function loadLayer(
     params.set("time_start", timeFilter.start);
     params.set("time_end", timeFilter.end);
   }
-  return loadGeoParquet(
+  params.set("format", "arrow");
+  return loadGeoData(
     `${API_BASE}/features/${namespace}/${layer}?${params}`
   );
 }
