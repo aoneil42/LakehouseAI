@@ -456,12 +456,13 @@ the map in real time.
 ```
 
 1. User types a question in the chat panel
-2. Chat panel POSTs to `/api/agent/chat` → nginx proxies to agent container (8090)
-3. Agent generates SQL, calls MCP `materialize_result` with scratch namespace
-4. Agent POSTs to `/api/agent/notify/{session_id}` on the lakehouse API
-5. Lakehouse API computes bbox, pushes `layer_ready` event via WebSocket
-6. Webmap receives event, loads layer via existing GeoParquet pipeline
-7. Map flies to result extent
+2. Chat panel POSTs to `/api/agent/chat` with `{session_id, message, active_layers}` → nginx proxies to agent container (8090)
+3. Agent uses `active_layers` to filter schema context to the relevant namespace, then generates SQL
+4. Agent calls MCP `materialize_result` with scratch namespace (GEOMETRY columns auto-converted to WKB)
+5. Agent POSTs to `/api/agent/notify/{session_id}` on the lakehouse API
+6. Lakehouse API computes bbox, pushes `layer_ready` event via WebSocket
+7. Webmap receives event, loads layer via existing GeoParquet pipeline
+8. Map flies to result extent
 
 ### Running Without the Agent
 

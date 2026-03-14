@@ -1122,7 +1122,38 @@ def materialize_result(
             if overwrite:
                 conn.execute(f"DROP TABLE IF EXISTS {qualified}")
 
-            conn.execute(f"CREATE TABLE {qualified} AS {sql}")
+            # Detect GEOMETRY columns and wrap with ST_AsWKB() so Iceberg
+            # can store them as BLOB (Iceberg doesn't support native GEOMETRY).
+            ctas_sql = sql
+            try:
+                # Strip trailing semicolons for safe subquery wrapping
+                inner_sql = sql.rstrip().rstrip(";")
+                desc = conn.execute(
+                    f"DESCRIBE SELECT * FROM ({inner_sql}) AS _describe_src LIMIT 0"
+                ).fetchall()
+                geom_cols = {row[0] for row in desc if row[1].upper() == "GEOMETRY"}
+                if geom_cols:
+                    all_cols = [row[0] for row in desc]
+                    # Deduplicate column names (e.g. SELECT b.*, b.geometry → two "geometry")
+                    seen = set()
+                    col_exprs = []
+                    for c in all_cols:
+                        if c in seen:
+                            continue
+                        seen.add(c)
+                        if c in geom_cols:
+                            col_exprs.append(f'ST_AsWKB("{c}") AS "{c}"')
+                        else:
+                            col_exprs.append(f'"{c}"')
+                    select_clause = ", ".join(col_exprs)
+                    ctas_sql = f"SELECT {select_clause} FROM ({inner_sql}) AS _geom_src"
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "GEOMETRY detection failed, using original SQL: %s", e
+                )
+
+            conn.execute(f"CREATE TABLE {qualified} AS {ctas_sql}")
 
             count = conn.execute(
                 f"SELECT COUNT(*)::INTEGER FROM {qualified}"

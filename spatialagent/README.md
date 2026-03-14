@@ -7,7 +7,7 @@ Part of the [LakehouseAI](../README.md) monorepo. Natural-language spatial query
 ```
 User (webmap chat panel)
   │
-  │  POST /api/agent/chat  {session_id, message}
+  │  POST /api/agent/chat  {session_id, message, active_layers}
   │  (proxied by nginx → spatial-agent:8090)
   ▼
 ┌─────────────────────────────────────────────────────┐
@@ -112,6 +112,10 @@ Key prompt rules ensure correct SQL:
 ### Schema Context
 
 The `SchemaBuilder` discovers available tables and columns via MCP `list_tables` + `describe_table`, then injects this context into the LLM prompt. Scratch tables (from previous agent sessions) are automatically filtered out to keep the prompt focused.
+
+**Categorical value sampling:** For columns named `class`, `subtype`, `basic_category`, `type`, or `category`, the builder samples up to 15 distinct values and includes them in the schema context (e.g. `→ class values: apartments, school, hospital`). This helps the LLM distinguish between tables with similar names but different semantics.
+
+**Namespace filtering:** When the webmap sends `active_layers` (the currently visible layer keys), the builder extracts namespaces and preferentially includes only tables from those namespaces. This prevents the LLM from picking tables in the wrong namespace when multiple datasets are loaded.
 
 ## Quick Start
 

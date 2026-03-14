@@ -17,7 +17,7 @@ DuckDB (in-process, :memory:)
     └── spatial extension  → ST_* geospatial functions
 ```
 
-**Key design decision:** DuckDB v1.4+ natively supports `ATTACH` to Iceberg REST Catalogs. Once attached, the catalog appears as a regular DuckDB database — `SHOW ALL TABLES`, `DESCRIBE`, `iceberg_snapshots()`, time travel, and full SQL (including spatial functions) all work through a single connection. No pyiceberg dependency.
+**Key design decision:** DuckDB v1.5 natively supports `ATTACH` to Iceberg REST Catalogs. Once attached, the catalog appears as a regular DuckDB database — `SHOW ALL TABLES`, `DESCRIBE`, `iceberg_snapshots()`, time travel, and full SQL (including spatial functions) all work through a single connection. No pyiceberg dependency.
 
 ### Infrastructure Stack
 
@@ -62,7 +62,7 @@ DuckDB (in-process, :memory:)
 | `sample_data` | Preview rows from a table |
 | `table_stats` | Row counts, column stats, geometry summary |
 | `export_geojson` | Export as GeoJSON FeatureCollection |
-| `materialize_result` | Write query results to a scratch Iceberg table for map display |
+| `materialize_result` | Write query results to a scratch Iceberg table for map display (auto-converts GEOMETRY → WKB) |
 
 ### System
 | Tool | Description |
@@ -224,6 +224,10 @@ All environment variables use the `SLM_` prefix (Spatial Lakehouse MCP), except 
 ### ACCESS_DELEGATION_MODE
 
 When running the MCP server **outside Docker** (on the host), the `ATTACH` statement uses `ACCESS_DELEGATION_MODE 'none'`. This bypasses LakeKeeper's remote signing, which otherwise returns S3 URLs containing Docker-internal hostnames (e.g., `garage:3900` instead of `localhost:3900`). The server's local S3 secret provides the correct host-accessible endpoint.
+
+### GEOMETRY Auto-Conversion
+
+`materialize_result` automatically detects DuckDB `GEOMETRY`-typed columns in query results and wraps them with `ST_AsWKB()` before writing to Iceberg. This is necessary because Iceberg does not support native DuckDB GEOMETRY — only WKB BLOBs. The conversion is transparent: buffer analysis, spatial transforms, and other queries that produce GEOMETRY columns all materialize correctly without manual casting.
 
 ### SQL Safety
 

@@ -33,6 +33,15 @@ Rules:
   Use JSON access ONLY for STRUCT/JSON columns: WHERE names::JSON->>'primary' = 'Name'
   Never use ::JSON on VARCHAR columns — it will error.
 - NEVER query information_schema — use only the tables listed below
+- When the schema context lists sample values for categorical columns (e.g.
+  "class values: apartments, school, hospital" or "basic_category values:
+  elementary_school, restaurant"), USE these values to select the correct table.
+  For example, if looking for schools as points-of-interest, prefer a table whose
+  category column contains school-related values (like basic_category) over a
+  table that merely has a 'school' building class for footprints.
+- When active layers are specified in the context, PREFER tables from those
+  namespaces. Only use tables from other namespaces if the active namespace
+  has no relevant data.
 - Return ONLY the SQL query, no explanation
 
 Unit conversions (distances are in DEGREES for EPSG:4326):

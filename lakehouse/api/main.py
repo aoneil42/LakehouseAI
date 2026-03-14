@@ -2079,3 +2079,100 @@ async def agent_notify(session_id: str, payload: LayerNotification):
     }
     await _ws_manager.send_to_session(session_id, event)
     return {"status": "notified", "session_id": session_id}
+
+
+# ---------------------------------------------------------------------------
+# Scratch Layer Management
+# ---------------------------------------------------------------------------
+
+
+@app.delete("/api/scratch/{namespace}")
+def delete_scratch_namespace(namespace: str):
+    """Drop an entire scratch namespace. Must start with '_scratch_'."""
+    if not namespace.startswith("_scratch_"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Only scratch namespaces can be deleted via this endpoint"},
+        )
+    if not _VALID_NS_PATH.match(namespace):
+        return JSONResponse(status_code=400, content={"error": "Invalid namespace name"})
+    dropped: list[str] = []
+    with _pool.acquire() as conn:  # type: ignore[union-attr]
+        # Iceberg doesn't support DROP SCHEMA CASCADE — drop tables first
+        try:
+            rows = conn.execute(
+                f"SELECT table_name FROM information_schema.tables "
+                f"WHERE table_catalog='lakehouse' AND table_schema='{namespace}'"
+            ).fetchall()
+            for (tbl,) in rows:
+                conn.execute(f"DROP TABLE IF EXISTS lakehouse.{namespace}.{tbl}")
+                dropped.append(tbl)
+        except Exception:
+            pass  # namespace may not exist
+        try:
+            conn.execute(f"DROP SCHEMA IF EXISTS lakehouse.{namespace}")
+        except Exception:
+            pass  # schema may not exist or already empty
+    global _catalog_prefix
+    _catalog_prefix = None
+    return {"status": "ok", "namespace": namespace, "dropped_tables": dropped}
+
+
+class ScratchSaveRequest(BaseModel):
+    source_namespace: str
+    source_table: str
+    target_namespace: str
+    target_table: str
+
+
+@app.post("/api/scratch/save")
+def save_scratch_layer(req: ScratchSaveRequest):
+    """Copy a scratch table to a permanent namespace."""
+    if not req.source_namespace.startswith("_scratch_"):
+        return JSONResponse(
+            status_code=400, content={"error": "Source must be a scratch namespace"}
+        )
+    if req.target_namespace.startswith("_scratch_"):
+        return JSONResponse(
+            status_code=400, content={"error": "Target cannot be a scratch namespace"}
+        )
+    for ns in (req.source_namespace, req.target_namespace):
+        if not _VALID_NS_PATH.match(ns):
+            return JSONResponse(
+                status_code=400, content={"error": f"Invalid namespace: {ns}"}
+            )
+    for name in (req.source_table, req.target_table):
+        if not _VALID_NAME.match(name):
+            return JSONResponse(
+                status_code=400, content={"error": f"Invalid table name: {name}"}
+            )
+
+    source = f"lakehouse.{req.source_namespace}.{req.source_table}"
+    target = f"lakehouse.{req.target_namespace}.{req.target_table}"
+
+    with _pool.acquire() as conn:  # type: ignore[union-attr]
+        conn.execute(
+            f"CREATE SCHEMA IF NOT EXISTS lakehouse.{req.target_namespace}"
+        )
+        try:
+            conn.execute(f"CREATE TABLE {target} AS SELECT * FROM {source}")
+        except duckdb.CatalogException as e:
+            if "already exists" in str(e).lower():
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": f"Table {req.target_namespace}.{req.target_table} already exists"
+                    },
+                )
+            raise
+        row_count = conn.execute(f"SELECT COUNT(*) FROM {target}").fetchone()[0]
+
+    global _catalog_prefix
+    _catalog_prefix = None
+
+    return {
+        "status": "ok",
+        "source": f"{req.source_namespace}.{req.source_table}",
+        "target": f"{req.target_namespace}.{req.target_table}",
+        "rows": row_count,
+    }

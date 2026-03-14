@@ -42,6 +42,7 @@ llm_client = LLMClient(
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    active_layers: list[str] = []
 
 
 def _sse(event: dict) -> str:
@@ -71,7 +72,16 @@ async def chat(req: ChatRequest):
 
             # Discover schema
             yield _sse({"type": "status", "content": "Discovering schema..."})
-            schema_context = await schema_builder.build_context(req.message, session)
+            # Extract active namespaces from webmap layer keys ("ns/table" → "ns")
+            active_namespaces = list({
+                layer.split("/")[0]
+                for layer in req.active_layers
+                if "/" in layer
+            })
+            print(f"[DEBUG] active_layers={req.active_layers}, active_namespaces={active_namespaces}", flush=True)
+            schema_context = await schema_builder.build_context(
+                req.message, session, active_namespaces=active_namespaces
+            )
 
             # Meta: route to specific MCP tool if possible, else schema context
             if intent == "meta":
