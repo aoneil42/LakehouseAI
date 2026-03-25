@@ -94,6 +94,33 @@ claude mcp add spatial-lakehouse --transport http --url http://localhost:8082/mc
 
 See [`icebergmcp/README.md`](icebergmcp/) for all 19 tools and configuration.
 
+## Testing
+
+Each component has its own test suite. The spatial agent includes an NL2Spatial evaluation harness based on research benchmarks (GeoSQL-Eval, SpatialQueryQA).
+
+```bash
+# MCP server — in-memory DuckDB, no Docker needed
+cd icebergmcp && pytest -v
+
+# Spatial agent — unit tests (482 tests, mocked)
+cd spatialagent && pytest tests/ -m "not live" -v
+
+# Spatial agent — integration eval (52 questions against live Docker)
+cd spatialagent && pytest tests/eval_nl2spatial.py -m live -v
+```
+
+| Component | Tests | Coverage |
+|-----------|-------|----------|
+| MCP Server (`icebergmcp/`) | 21 | All 19 tools: spatial queries, joins, buffers, export, materialization |
+| Spatial Agent (`spatialagent/`) | 482 | Intent classification, tool routing, SQL generation, error correction, paraphrase robustness |
+| Integration Eval | 52 | End-to-end NL queries across 3 difficulty tiers (87% execution accuracy) |
+
+See [`spatialagent/README.md`](spatialagent/) for the full NL2Spatial testing methodology.
+
+## AI Integration
+
+See [`AI-INTEGRATION.md`](AI-INTEGRATION.md) for a detailed explanation of how this stack implements AI — from the Model Context Protocol (MCP) tool layer through the natural-language agent to the webmap chat interface.
+
 ## License
 
 Apache-2.0

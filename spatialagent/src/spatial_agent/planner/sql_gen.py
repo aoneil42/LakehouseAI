@@ -9,33 +9,44 @@ class ValidationError(Exception):
     pass
 
 
+def _strip_ddl_wrapper(sql: str) -> str:
+    """Strip CREATE TABLE ... AS wrapper, keeping only the SELECT."""
+    m = re.match(
+        r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+\S+\s+AS\s+",
+        sql,
+    )
+    if m:
+        return sql[m.end():].strip()
+    return sql
+
+
 def extract_sql(llm_response: str) -> str:
     # Try fenced SQL blocks first
     match = re.search(r"```sql\s*\n(.*?)```", llm_response, re.DOTALL | re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        return _strip_ddl_wrapper(match.group(1).strip())
 
     # Try generic fenced blocks
     match = re.search(r"```\s*\n(.*?)```", llm_response, re.DOTALL)
     if match:
-        candidate = match.group(1).strip()
+        candidate = _strip_ddl_wrapper(match.group(1).strip())
         if re.match(r"(?i)(SELECT|WITH)\b", candidate):
             return candidate
 
-    # Fall back to lines starting with SELECT or WITH
+    # Fall back to lines starting with SELECT, WITH, or CREATE TABLE AS
     lines = llm_response.strip().splitlines()
     sql_lines = []
     capturing = False
     for line in lines:
         stripped = line.strip()
-        if not capturing and re.match(r"(?i)(SELECT|WITH)\b", stripped):
+        if not capturing and re.match(r"(?i)(SELECT|WITH|CREATE)\b", stripped):
             capturing = True
         if capturing:
             sql_lines.append(line)
 
     if sql_lines:
         result = "\n".join(sql_lines).strip().rstrip(";") + ";"
-        return result
+        return _strip_ddl_wrapper(result)
 
     raise ExtractionError("No SQL found in LLM response")
 

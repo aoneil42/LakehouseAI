@@ -33,6 +33,11 @@ Rules:
   Use JSON access ONLY for STRUCT/JSON columns: WHERE names::JSON->>'primary' = 'Name'
   Never use ::JSON on VARCHAR columns — it will error.
 - NEVER query information_schema — use only the tables listed below
+- CRITICAL: Return ONLY a SELECT (or WITH ... SELECT) statement. NEVER generate
+  CREATE TABLE, INSERT, UPDATE, DELETE, or any DDL. The system handles
+  materialization and layer creation automatically — you just produce the SELECT.
+  For requests like "save as a new layer" or "create a scratch table", write the
+  SELECT query that produces the desired data. The framework handles the rest.
 - When the schema context lists sample values for categorical columns (e.g.
   "class values: apartments, school, hospital" or "basic_category values:
   elementary_school, restaurant"), USE these values to select the correct table.
@@ -145,6 +150,24 @@ LEFT JOIN lakehouse.default.buildings b
   AND b.height > 20
 GROUP BY z.id, z.zone_name, z.geometry
 ORDER BY tall_building_count DESC
+
+User: "Save all hospitals from places as a new layer"
+Thought: User wants to create a materialized layer. I must write a SELECT — the
+  framework handles materialization. Filter places by hospital category.
+SQL:
+SELECT p.*, p.geometry
+FROM lakehouse.default.places p
+WHERE p.basic_category = 'hospital'
+
+User: "Create a scratch table with all buildings in residential zones for the webmap"
+Thought: Spatial join between buildings and land_use. I write a SELECT — the
+  framework materializes it automatically.
+SQL:
+SELECT b.*, b.geometry
+FROM lakehouse.default.buildings b
+JOIN lakehouse.default.land_use z
+  ON ST_Contains(ST_GeomFromWKB(z.geometry), ST_GeomFromWKB(b.geometry))
+WHERE z.class = 'residential'
 
 == End Examples ==
 

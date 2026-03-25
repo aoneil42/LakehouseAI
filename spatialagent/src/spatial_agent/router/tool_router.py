@@ -102,6 +102,29 @@ _TABLE_SEARCH = re.compile(
     r"\b(related|about|for|named|called|matching|like)\b"
 )
 
+# Temporal: "What snapshots exist for X?" / "Show history of X"
+_TABLE_SNAPSHOTS = re.compile(
+    r"(?i)("
+    r"\b(what|which|list|show)\b.*\b(snapshots?|versions?|history)\b"
+    r"|\b(snapshots?|versions?)\b.*\b(exist|available|for|of)\b"
+    r")"
+)
+
+# Time travel: "Show X as it was at snapshot Y" / "X as of timestamp"
+_TIME_TRAVEL = re.compile(
+    r"(?i)("
+    r"\b(as\s+it\s+was|as\s+of|look(?:ed)?\s+like|at\s+snapshot|at\s+the\s+earliest)\b"
+    r"|\b(time\s+travel|historical|previous\s+version)\b"
+    r"|\b(data|table)\b.*\b(at|on|from)\b.*\b(\d{4}[-/]\d{2}|\bsnapshot\s+\d+)\b"
+    r"|\b(what\s+did)\b.*\b(look\s+like|as\s+of)\b.*\b(on|at|in)\b"
+    r")"
+)
+
+# Export: "Export X as GeoJSON"
+_EXPORT_GEOJSON = re.compile(
+    r"(?i)\b(export|download)\b.*\b(geojson|geo\s*json)\b"
+)
+
 # Q1: "What datasets/tables are available?" (broadest — checked last)
 _LIST_TABLES = re.compile(
     r"(?i)("
@@ -111,13 +134,16 @@ _LIST_TABLES = re.compile(
 )
 
 
-def match(message: str, known_tables: list[dict]) -> Optional[ToolRoute]:
+def match(message: str, known_tables: list[dict],
+          active_namespaces: list[str] | None = None) -> Optional[ToolRoute]:
     """Match a user message to an MCP catalog tool.
 
     Args:
         message: The user's natural-language query.
         known_tables: Table dicts from SchemaBuilder cache, each with
                       keys: namespace, name, full_name.
+        active_namespaces: Optional list of active namespace names from
+                          the webmap layer selection.
 
     Returns:
         A ToolRoute if a confident match is found, or None to fall
@@ -201,6 +227,55 @@ def match(message: str, known_tables: list[dict]) -> Optional[ToolRoute]:
         pattern = _extract_search_pattern(message)
         if pattern:
             return ToolRoute("search_tables", {"pattern": pattern})
+
+    # Temporal: snapshots and time travel (before list_tables to avoid false match)
+    if _TIME_TRAVEL.search(message):
+        table_ref = _extract_table_ref(message, known_tables)
+        if table_ref:
+            snapshot_id = _extract_snapshot_id(message)
+            timestamp = _extract_timestamp(message)
+            args = {"table": table_ref, "sql_select": "SELECT *"}
+            if snapshot_id:
+                args["snapshot_id"] = snapshot_id
+            elif timestamp:
+                args["timestamp"] = timestamp
+            else:
+                # "as it was at the earliest" — need snapshots first
+                return ToolRoute("table_snapshots", {"table": table_ref})
+            return ToolRoute("time_travel_query", args)
+        return None
+
+    if _TABLE_SNAPSHOTS.search(message):
+        table_ref = _extract_table_ref(message, known_tables)
+        if table_ref:
+            return ToolRoute("table_snapshots", {"table": table_ref})
+        return None
+
+    # Export GeoJSON
+    if _EXPORT_GEOJSON.search(message):
+        table_ref = _extract_table_ref(message, known_tables)
+        if not table_ref:
+            # Infer table from feature type keywords
+            table_ref = _infer_table_from_features(
+                message, known_tables, active_namespaces
+            )
+        if table_ref:
+            args = {"table": table_ref}
+            where = _extract_where_clause(message)
+            if where:
+                args["where"] = where
+            else:
+                # Try to extract feature type filter: "just the schools" → "school"
+                feature_filter = _extract_feature_type_filter(message)
+                if feature_filter:
+                    args["where"] = feature_filter
+            # Detect column selection hints
+            columns = _extract_export_columns(message)
+            if columns:
+                args["columns"] = columns
+            return ToolRoute("export_geojson", args,
+                             format_hint="export")
+        return None
 
     if _LIST_TABLES.search(message):
         return ToolRoute("list_tables", {})
@@ -332,6 +407,121 @@ def _extract_column_name(message: str) -> Optional[str]:
     if m:
         return m.group(1)
 
+    return None
+
+
+def _extract_snapshot_id(message: str) -> Optional[int]:
+    """Extract snapshot ID from 'at snapshot 12345'."""
+    m = re.search(r"(?i)\bsnapshot\s+(\d+)\b", message)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _extract_timestamp(message: str) -> Optional[str]:
+    """Extract a date/timestamp from the message for time travel."""
+    # "on March 1, 2026" / "on 2025-06-15"
+    # ISO format
+    m = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", message)
+    if m:
+        return f"{m.group(1)} 00:00:00"
+    # "March 1, 2026" / "June 15, 2025"
+    m = re.search(
+        r"(?i)\b(january|february|march|april|may|june|july|august|"
+        r"september|october|november|december)\s+(\d{1,2}),?\s+(\d{4})\b",
+        message,
+    )
+    if m:
+        month_names = {
+            "january": "01", "february": "02", "march": "03", "april": "04",
+            "may": "05", "june": "06", "july": "07", "august": "08",
+            "september": "09", "october": "10", "november": "11", "december": "12",
+        }
+        month = month_names[m.group(1).lower()]
+        day = m.group(2).zfill(2)
+        year = m.group(3)
+        return f"{year}-{month}-{day} 00:00:00"
+    return None
+
+
+def _infer_table_from_features(
+    message: str, known_tables: list[dict],
+    active_namespaces: list[str] | None = None,
+) -> Optional[str]:
+    """Infer a table reference from feature-type keywords.
+
+    Maps common feature types to likely tables (buildings, places, etc.)
+    when no explicit table name is mentioned.
+    """
+    msg_lower = message.lower()
+    # Feature types that typically live in a buildings table
+    _BUILDING_FEATURES = {
+        "school", "hospital", "church", "house", "apartment",
+        "office", "warehouse", "garage", "shed", "commercial",
+        "industrial", "residential", "kindergarten",
+    }
+    # Feature types that typically live in a places/POI table
+    _PLACE_FEATURES = {
+        "restaurant", "cafe", "hotel", "shop", "store", "bar",
+        "pharmacy", "bank", "supermarket", "museum", "park",
+    }
+    # Build lookup: prefer active namespaces > non-scratch > scratch/test
+    active_ns = set(ns.lower() for ns in (active_namespaces or []))
+    tables_by_name: dict[str, dict] = {}
+    for t in known_tables:
+        key = t["name"].lower()
+        ns = t["namespace"].lower()
+        existing = tables_by_name.get(key)
+        if not existing:
+            tables_by_name[key] = t
+        elif ns in active_ns and existing["namespace"].lower() not in active_ns:
+            tables_by_name[key] = t  # Active namespace wins
+        elif not ns.startswith("_") and existing["namespace"].lower().startswith("_"):
+            tables_by_name[key] = t  # Non-scratch wins over scratch
+
+    for feat in _BUILDING_FEATURES:
+        if re.search(rf"\b{feat}s?\b", msg_lower):
+            t = tables_by_name.get("buildings")
+            if t:
+                return f"{t['namespace']}.{t['name']}"
+    for feat in _PLACE_FEATURES:
+        if re.search(rf"\b{feat}s?\b", msg_lower):
+            t = tables_by_name.get("places")
+            if t:
+                return f"{t['namespace']}.{t['name']}"
+    return None
+
+
+def _extract_feature_type_filter(message: str) -> Optional[str]:
+    """Extract a feature type filter from natural language.
+
+    Maps "just the schools" → "class = 'school'" or
+    "only hospitals" → "class = 'hospital'"
+    """
+    m = re.search(
+        r"(?i)\b(?:just|only|the)\s+(?:the\s+)?(\w+)\b",
+        message,
+    )
+    if not m:
+        return None
+    candidate = m.group(1).lower().rstrip("s")  # "schools" → "school"
+    if candidate in _STOP_WORDS or candidate in {"geojson", "export", "all"}:
+        return None
+    # Return as a hint — categorical column + value
+    # Try common patterns: class, subtype, basic_category
+    return f"class = '{candidate}' OR subtype = '{candidate}'"
+
+
+def _extract_export_columns(message: str) -> Optional[str]:
+    """Extract column names for export from 'with their names' patterns."""
+    m = re.search(r"(?i)\bwith\s+(?:their\s+)?(\w+(?:\s*,\s*\w+)*)\b", message)
+    if m:
+        candidate = m.group(1).lower()
+        # Filter out common non-column words
+        if candidate in {"names", "name"}:
+            return "names"
+        if candidate not in _STOP_WORDS:
+            return candidate
     return None
 
 
@@ -531,6 +721,52 @@ def _format_geometry_types_multi(results: list[tuple[str, dict]]) -> str:
     return "\n".join(lines)
 
 
+def _format_table_snapshots(result: dict) -> str:
+    snapshots = result.get("snapshots", result.get("rows", []))
+    if not snapshots:
+        return "No snapshots found for this table."
+    lines = [f"**{len(snapshots)} snapshot(s):**"]
+    for snap in snapshots:
+        snap_id = snap.get("snapshot_id", snap.get("id", "?"))
+        ts = snap.get("timestamp", snap.get("committed_at", "?"))
+        parent = snap.get("parent_id", "")
+        parent_str = f" (parent: {parent})" if parent else ""
+        lines.append(f"  - Snapshot `{snap_id}` at {ts}{parent_str}")
+    return "\n".join(lines)
+
+
+def _format_time_travel(result: dict) -> str:
+    rows = result.get("rows", [])
+    row_count = result.get("row_count", len(rows))
+    if not rows:
+        return f"Time-travel query returned {row_count} row(s)."
+    if row_count <= 20:
+        return _format_sample_data(result)
+    return f"Time-travel query returned {row_count} row(s)."
+
+
+def _format_export_geojson(result: dict) -> str:
+    # GeoJSON FeatureCollection: {type, features, metadata}
+    metadata = result.get("metadata", {})
+    if isinstance(metadata, str):
+        import json as _json
+        try:
+            metadata = _json.loads(metadata)
+        except Exception:
+            metadata = {}
+    feature_count = metadata.get("feature_count", 0)
+    features = result.get("features", [])
+    if not feature_count:
+        feature_count = len(features) if isinstance(features, list) else 0
+    if feature_count:
+        truncated = metadata.get("truncated", False)
+        note = " (truncated)" if truncated else ""
+        return f"Exported {feature_count} features as GeoJSON{note}."
+    if result.get("error"):
+        return f"Export error: {result.get('message', result.get('error'))}"
+    return "Export returned 0 features."
+
+
 def _format_generic(result: dict) -> str:
     row_count = result.get("row_count", 0)
     return f"Query returned {row_count} result(s)."
@@ -544,4 +780,7 @@ _FORMATTERS = {
     "sample_data": _format_sample_data,
     "table_stats": _format_table_stats,
     "get_bbox": _format_get_bbox,
+    "table_snapshots": _format_table_snapshots,
+    "time_travel_query": _format_time_travel,
+    "export_geojson": _format_export_geojson,
 }

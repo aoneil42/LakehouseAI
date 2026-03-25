@@ -62,6 +62,46 @@ from spatial_agent.router.intent import classify
     ("Count buildings taller than 20m in each zone", "spatial"),
     # Edge case: "zones table" in meta context should still be meta
     ("How many records are in the zones table?", "meta"),
+    # Tier 3 — Section 3.8: Multi-step spatial (Q36-Q38)
+    ("Which buildings are within 500m of a hospital?", "spatial"),
+    ("Find the total area of land_use zones that contain at least 3 buildings", "spatial"),
+    ("Create a heat map layer of building density by land_use zone and save it for the webmap", "spatial"),
+    # Tier 3 — Section 3.9: Temporal (Q39-Q42)
+    ("Compare the current buildings dataset to last week's snapshot — what changed?", "meta"),
+    ("What snapshots exist for the buildings table?", "meta"),
+    ("Show me the buildings data as it was at the earliest snapshot", "meta"),
+    ("What did the buildings table look like on March 1, 2026?", "meta"),
+    # Tier 3 — Section 3.10: Export (Q43-Q44)
+    ("Export all buildings as GeoJSON", "meta"),
+    ("Export just the schools with their names as GeoJSON", "meta"),
+    # Tier 3 — Section 3.10: Materialization (Q45-Q46)
+    ("Save all hospitals from places as a new layer called nearby_hospitals", "spatial"),
+    ("Create a scratch table with all buildings in residential land_use zones for the webmap", "spatial"),
+    # Tier 3 — Section 3.11: Ambiguous & edge cases (Q47-Q52)
+    ("Show me everything near the center", "spatial"),
+    ("buildings close to land_use zones", "spatial"),
+    ("Find features within 500 of the point", "spatial"),
+    ("What's in the database?", "meta"),
+    ("Can you make a map of all the schools with a 1km service area?", "spatial"),
+    ("Are there more buildings in residential areas or commercial areas?", "analytics"),
+    # Phase 1 keyword expansion — new spatial keywords
+    ("find the centroid of each building", "spatial"),
+    ("buildings on the north side of the river", "spatial"),
+    ("create a 500m corridor around the road", "spatial"),
+    ("what is the footprint of the building?", "spatial"),
+    ("features outside the boundary", "spatial"),
+    ("convert coordinates to meters", "spatial"),
+    ("show me data within 2 km", "spatial"),
+    ("find buildings within 1 yard of the road", "spatial"),
+    # Phase 1 — materialization patterns (save/create as layer)
+    ("save the results as a layer", "spatial"),
+    ("create a scratch table for the map", "spatial"),
+    ("materialize this as a new layer", "spatial"),
+    # Phase 1 — meta patterns (how many tables)
+    ("how many tables are there?", "meta"),
+    ("how many datasets do we have?", "meta"),
+    ("how many layers are available?", "meta"),
+    # Conversational
     ("hello, what can you do?", "conversational"),
     ("hi", "conversational"),
     ("help", "conversational"),

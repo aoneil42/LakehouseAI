@@ -159,7 +159,7 @@ Results: 3 passed, 0 failed
 pytest -v
 ```
 
-Tests run against local in-memory DuckDB tables (no infrastructure required).
+Tests run against local in-memory DuckDB tables (no infrastructure required). The test suite creates in-memory tables with real spatial data (points, polygons using shapely for WKB generation) and exercises all 19 MCP tools including spatial queries, bbox filtering, spatial joins, buffer analysis, GeoJSON export, and materialization with automatic GEOMETRY-to-WKB conversion.
 
 ### 5. Start the Server
 

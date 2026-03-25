@@ -86,7 +86,7 @@ async def chat(req: ChatRequest):
             # Meta: route to specific MCP tool if possible, else schema context
             if intent == "meta":
                 known_tables = session.schema_cache.get("_tables", [])
-                route = match_tool(req.message, known_tables)
+                route = match_tool(req.message, known_tables, active_namespaces)
 
                 if route and route.tool_name == "search_tables":
                     # Use LLM fuzzy search for better semantic matching

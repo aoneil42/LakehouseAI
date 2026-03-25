@@ -179,17 +179,22 @@ spatialagent/
 │   └── notify/
 │       └── lakehouse.py            # POST to lakehouse API after materialization
 └── tests/
-    ├── test_intent.py              # Intent classification tests
-    ├── test_tool_router.py         # Tool router pattern matching + formatting tests
-    ├── test_server.py
-    ├── test_schema.py
-    ├── test_sql_gen.py
-    ├── test_retry.py
-    ├── test_mcp_client.py
-    ├── test_llm.py
-    ├── test_registry.py
-    ├── test_session.py
-    └── test_notify.py
+    ├── fixtures/
+    │   ├── canonical_questions.json  # 52 NL2Spatial test cases
+    │   └── paraphrases.json          # 208 controlled paraphrases
+    ├── eval_nl2spatial.py            # Integration eval harness (live Docker)
+    ├── test_intent.py                # Intent classification (86 tests)
+    ├── test_tool_router.py           # Tool routing + formatting (66 tests)
+    ├── test_paraphrases.py           # Paraphrase robustness (268 tests)
+    ├── test_retry.py                 # Retry loop + error hints (16 tests)
+    ├── test_sql_gen.py               # SQL extraction + validation (17 tests)
+    ├── test_schema.py                # Schema builder (4 tests)
+    ├── test_server.py                # FastAPI endpoints (8 tests)
+    ├── test_mcp_client.py            # MCP client (5 tests)
+    ├── test_llm.py                   # LLM backends
+    ├── test_registry.py              # Model detection
+    ├── test_session.py               # Session state
+    └── test_notify.py                # Lakehouse notifications
 ```
 
 ## Configuration
@@ -222,10 +227,65 @@ spatialagent/
 
 ## Testing
 
+The agent has a two-tier test suite: fast unit tests (mocked, no Docker) and integration eval tests (live against Docker services).
+
+### Unit Tests (482 tests)
+
 ```bash
 pip install -e ".[dev]"
-pytest tests/ -v
+pytest tests/ -m "not live" -v
 ```
+
+| Suite | Tests | What It Covers |
+|-------|-------|----------------|
+| `test_intent.py` | 86 | Intent classification across all 52 canonical questions + Tier 2/3 edge cases |
+| `test_tool_router.py` | 66 | Rule-based routing for 14 MCP tools: pattern matching, parameter extraction, result formatting |
+| `test_paraphrases.py` | 268 | Robustness: 208 intent tests + 60 routing tests across 4 paraphrases per canonical question |
+| `test_retry.py` | 16 | Retry loop + 10 spatial error hint pattern tests (WKB mismatch, GROUP BY, column not found, etc.) |
+| `test_sql_gen.py` | 17 | SQL extraction from LLM output, validation, DDL stripping |
+| `test_schema.py` | 4 | Schema builder caching, context generation |
+| `test_server.py` | 8 | FastAPI endpoint routing, SSE streaming |
+| `test_mcp_client.py` | 5 | MCP tool calling, error handling |
+| Others | 12 | LLM client, model registry, session management, notifications |
+
+### Integration Eval (52 questions, live)
+
+Runs all 52 canonical questions against live Docker services and generates a scoring report.
+
+```bash
+# Requires running Docker stack
+pytest tests/eval_nl2spatial.py -m live -v
+
+# Single question
+pytest tests/eval_nl2spatial.py -m live -v -k Q40
+
+# Report generated at tests/eval_report.md
+```
+
+Scores each question on: intent classification, tool selection, SQL pattern matching, and execution success. Generates `tests/eval_report.md` with results by tier, category, and per-query detail.
+
+**Last run: 87% execution accuracy** (41/47 scored).
+
+| Tier | Description | Pass Rate |
+|------|-------------|-----------|
+| Tier 1 | Basic — discovery, preview, spatial filter | 80% |
+| Tier 2 | Intermediate — proximity, spatial joins, buffers, aggregation | 87% |
+| Tier 3 | Advanced — temporal, export, materialization, ambiguous | 94% |
+
+### Test Fixtures
+
+- `tests/fixtures/canonical_questions.json` — 52 canonical NL questions with expected intents, tools, params, and SQL patterns
+- `tests/fixtures/paraphrases.json` — 208 controlled paraphrases (4 per question) for robustness testing
+
+### NL2Spatial Training Methodology
+
+The test corpus follows the NL2GeoSQL evaluation methodology (GeoSQL-Eval, SpatialQueryQA) with three difficulty tiers:
+
+- **Tier 1 (Q1-Q19):** Single-step operations — schema discovery, data preview, simple spatial filtering
+- **Tier 2 (Q20-Q35):** Multi-parameter — proximity/nearest neighbor, spatial joins, buffer analysis, spatial aggregation
+- **Tier 3 (Q36-Q52):** Multi-step reasoning — temporal queries, export/materialization, compound spatial, ambiguous/edge cases
+
+Each question tests: intent classification accuracy, tool selection (for meta queries), SQL pattern correctness (for spatial/analytics), and end-to-end execution success.
 
 ## Air-Gapped Deployment
 

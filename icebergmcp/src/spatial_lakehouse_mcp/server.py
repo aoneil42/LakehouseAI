@@ -931,8 +931,11 @@ def export_geojson(
             where_clause = ""
         prop_select = ", ".join(prop_cols)
 
+        # Geometry columns may be stored as WKB BLOB (Iceberg limitation).
+        # Try ST_AsGeoJSON(ST_GeomFromWKB(col)) first, fall back to direct.
         sql = (
-            f"SELECT {prop_select}, ST_AsGeoJSON({geom_col}) AS __geojson "
+            f"SELECT {prop_select}, "
+            f"ST_AsGeoJSON(ST_GeomFromWKB({geom_col})) AS __geojson "
             f"FROM {qualified} {where_clause} "
             f"LIMIT {limit}"
         )

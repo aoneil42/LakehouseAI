@@ -1,6 +1,22 @@
-The SQL you generated failed:
-Error: {error_message}
-Original query: {failed_sql}
-Original user request: {user_message}
+The SQL you generated failed. Fix it and return ONLY the corrected SELECT query.
+
+Failed query:
+{failed_sql}
+
+Error:
+{error_message}
+
+User's original request: {user_message}
+
 {schema_context}
-Fix the SQL. Return ONLY the corrected query.
+
+RULES:
+- Return ONLY a SELECT (or WITH ... SELECT) statement — no DDL, no explanation
+- Geometry columns are WKB BLOB — wrap with ST_GeomFromWKB() in spatial functions
+  Example: ST_Intersects(ST_GeomFromWKB(a.geometry), ST_GeomFromWKB(b.geometry))
+- Keep the raw geometry BLOB column in SELECT for map visualization — do NOT wrap it
+- Use ONLY column names from the schema context above
+- For distance in EPSG:4326: meters / 111320.0 (degrees, not meters)
+- With GROUP BY, list all non-aggregated columns explicitly — avoid SELECT *
+- In JOINs, always use table aliases to avoid ambiguous column references
+- If the error includes a "FIX:" hint, follow it precisely

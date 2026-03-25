@@ -1,4 +1,16 @@
+import json
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture(scope="session")
+def canonical_questions():
+    """Load the canonical NL2Spatial question corpus."""
+    fixture_path = Path(__file__).parent / "fixtures" / "canonical_questions.json"
+    with open(fixture_path) as f:
+        data = json.load(f)
+    return data["questions"]
 
 
 @pytest.fixture

@@ -343,6 +343,115 @@ def test_format_get_bbox():
     assert "[-105.5, 39.5, -104.5, 40.5]" in text
 
 
+# ── Tier 3: table_snapshots ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_table", [
+    ("What snapshots exist for the buildings table?", "default.buildings"),
+    ("Show the version history of roads", "default.roads"),
+    ("List all snapshots for parcels", "default.parcels"),
+    ("What snapshots are available for buildings?", "default.buildings"),
+])
+def test_table_snapshots(msg, expected_table, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "table_snapshots"
+    assert route.arguments == {"table": expected_table}
+
+
+# ── Tier 3: time_travel_query ────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_table,expected_key,expected_val", [
+    (
+        "Show buildings as it was at snapshot 12345",
+        "default.buildings", "snapshot_id", 12345,
+    ),
+    (
+        "What did the buildings table look like on 2025-06-15?",
+        "default.buildings", "timestamp", "2025-06-15 00:00:00",
+    ),
+    (
+        "What did the roads table look like on March 1, 2026?",
+        "default.roads", "timestamp", "2026-03-01 00:00:00",
+    ),
+])
+def test_time_travel_query(msg, expected_table, expected_key, expected_val, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "time_travel_query"
+    assert route.arguments["table"] == expected_table
+    assert route.arguments[expected_key] == expected_val
+    assert route.arguments.get("sql_select") == "SELECT *"
+
+
+def test_time_travel_earliest_falls_back_to_snapshots(known_tables):
+    """'as it was at the earliest' needs snapshots first."""
+    route = match("Show buildings data as it was at the earliest snapshot", known_tables)
+    assert route is not None
+    assert route.tool_name == "table_snapshots"
+
+
+# ── Tier 3: export_geojson ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("msg,expected_table", [
+    ("Export buildings as GeoJSON", "default.buildings"),
+    ("Download the roads data as geojson", "default.roads"),
+    ("Export the parcels table as GeoJSON", "default.parcels"),
+])
+def test_export_geojson(msg, expected_table, known_tables):
+    route = match(msg, known_tables)
+    assert route is not None
+    assert route.tool_name == "export_geojson"
+    assert route.arguments["table"] == expected_table
+    assert route.format_hint == "export"
+
+
+# ── Tier 3: formatting for new tools ────────────────────────────
+
+
+def test_format_table_snapshots():
+    result = {
+        "snapshots": [
+            {"snapshot_id": 123, "timestamp": "2025-06-15T00:00:00Z"},
+            {"snapshot_id": 456, "timestamp": "2025-07-01T00:00:00Z"},
+        ],
+    }
+    text = format_result("table_snapshots", result)
+    assert "2 snapshot(s)" in text
+    assert "123" in text
+    assert "456" in text
+
+
+def test_format_table_snapshots_empty():
+    result = {"snapshots": []}
+    text = format_result("table_snapshots", result)
+    assert "No snapshots" in text
+
+
+def test_format_export_geojson():
+    result = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature"}, {"type": "Feature"}],
+        "metadata": {"feature_count": 42, "truncated": False},
+    }
+    text = format_result("export_geojson", result)
+    assert "42 features" in text
+    assert "GeoJSON" in text
+
+
+def test_format_export_geojson_truncated():
+    result = {
+        "type": "FeatureCollection",
+        "features": [],
+        "metadata": {"feature_count": 500, "truncated": True},
+    }
+    text = format_result("export_geojson", result)
+    assert "500 features" in text
+    assert "truncated" in text
+
+
 # ── Tier 2: spatial aggregation should NOT match meta ────────────
 
 

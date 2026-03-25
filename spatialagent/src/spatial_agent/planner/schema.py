@@ -68,6 +68,14 @@ class SchemaBuilder:
                     for c in columns
                 )
                 line = f"  {full_name} ({cols})"
+
+                # Fetch table stats for row count + geometry types
+                stats = await self._get_stats(full_name, session, now)
+                if stats:
+                    row_count = stats.get("row_count")
+                    if row_count is not None:
+                        line += f"\n    → rows: {row_count:,}"
+
                 geom_cols = [
                     c.get("column_name", c.get("name", ""))
                     for c in columns
@@ -75,9 +83,21 @@ class SchemaBuilder:
                     or "geom" in c.get("column_type", c.get("type", "")).lower()
                 ]
                 if geom_cols:
+                    # Geometry type from stats (e.g. POLYGON, POINT, LINESTRING)
+                    geom_type_str = ""
+                    if stats:
+                        geom_types = stats.get("geometry_types", [])
+                        if geom_types:
+                            type_strs = [
+                                gt.get("geom_type", "?") for gt in geom_types
+                            ]
+                            geom_type_str = f" [{', '.join(type_strs)}]"
                     bbox = await self._get_bbox(full_name)
                     bbox_str = f" | bbox: {bbox}" if bbox else ""
-                    line += f"\n    → geometry: {', '.join(geom_cols)}{bbox_str}"
+                    line += (
+                        f"\n    → geometry: {', '.join(geom_cols)}"
+                        f"{geom_type_str}{bbox_str}"
+                    )
                 # Sample categorical columns to help LLM pick the right table
                 for c in columns:
                     col_name = c.get("column_name", c.get("name", ""))
@@ -130,6 +150,23 @@ class SchemaBuilder:
             return session.schema_cache[cache_key]
 
         result = await self.mcp.call_tool("describe_table", {"table": full_name})
+        if not _is_error(result):
+            session.schema_cache[cache_key] = result
+            return result
+        return {}
+
+    async def _get_stats(
+        self, full_name: str, session: SessionState, now: float
+    ) -> dict:
+        """Fetch table stats (row count, geometry types) with caching."""
+        cache_key = f"_stats_{full_name}"
+        if (
+            cache_key in session.schema_cache
+            and now - session.schema_cache_ts < SCHEMA_CACHE_TTL
+        ):
+            return session.schema_cache[cache_key]
+
+        result = await self.mcp.call_tool("table_stats", {"table": full_name})
         if not _is_error(result):
             session.schema_cache[cache_key] = result
             return result

@@ -19,3 +19,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "live: requires running Docker services (deselect with '-m not live')",
+]

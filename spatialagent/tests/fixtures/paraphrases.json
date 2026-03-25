@@ -1,0 +1,526 @@
+{
+  "version": "1.0",
+  "description": "Controlled paraphrases of the 52 canonical NL2Spatial questions. 4 variants each: casual, formal, reworded, terse.",
+  "paraphrases": [
+    {
+      "canonical_id": "Q1",
+      "expected_intent": "meta",
+      "variants": [
+        "what data do we have?",
+        "Could you list all available datasets in the system?",
+        "show me what tables exist",
+        "list all data"
+      ]
+    },
+    {
+      "canonical_id": "Q2",
+      "expected_intent": "meta",
+      "variants": [
+        "what schemas are in the catalog?",
+        "Please enumerate all available namespaces",
+        "show me the namespaces",
+        "list schemas"
+      ]
+    },
+    {
+      "canonical_id": "Q3",
+      "expected_intent": "meta",
+      "variants": [
+        "what columns does the buildings table have?",
+        "Can you describe the structure of the buildings dataset?",
+        "what are the columns in the buildings table?",
+        "describe the buildings table columns"
+      ]
+    },
+    {
+      "canonical_id": "Q4",
+      "expected_intent": "meta",
+      "variants": [
+        "which datasets are spatial?",
+        "List all tables that contain geometry data",
+        "show me tables with geom columns",
+        "find spatial tables"
+      ]
+    },
+    {
+      "canonical_id": "Q5",
+      "expected_intent": "meta",
+      "variants": [
+        "any tables with a population field?",
+        "Which datasets contain a population column?",
+        "do we have population data in any table?",
+        "find tables with population"
+      ]
+    },
+    {
+      "canonical_id": "Q6",
+      "expected_intent": "meta",
+      "variants": [
+        "got any road or transport data?",
+        "Search for datasets pertaining to transportation infrastructure",
+        "find tables about transport",
+        "search for road data"
+      ]
+    },
+    {
+      "canonical_id": "Q7",
+      "expected_intent": "meta",
+      "variants": [
+        "what fields are in the places table?",
+        "Please describe the column schema of the places dataset",
+        "show columns for places",
+        "list places table fields"
+      ]
+    },
+    {
+      "canonical_id": "Q8",
+      "expected_intent": "meta",
+      "variants": [
+        "give me a preview of buildings",
+        "Could you show a few sample rows from the buildings table?",
+        "sample the buildings data",
+        "preview buildings"
+      ]
+    },
+    {
+      "canonical_id": "Q9",
+      "expected_intent": "meta",
+      "variants": [
+        "how many rows in land_use?",
+        "How many rows are in the land_use table?",
+        "how many records in the land_use table?",
+        "land_use row count"
+      ]
+    },
+    {
+      "canonical_id": "Q10",
+      "expected_intent": "meta",
+      "variants": [
+        "give me the stats on buildings",
+        "Provide a statistical summary of the buildings dataset",
+        "summarize the buildings table",
+        "buildings stats"
+      ]
+    },
+    {
+      "canonical_id": "Q11",
+      "expected_intent": "meta",
+      "variants": [
+        "show me 5 rows of buildings, skip the geometry",
+        "Display the first 5 records from buildings excluding geometry columns",
+        "preview 5 buildings rows without geometry",
+        "sample 5 buildings no geom"
+      ]
+    },
+    {
+      "canonical_id": "Q12",
+      "expected_intent": "meta",
+      "variants": [
+        "what kind of geometries does transportation have?",
+        "What kinds of geometries are in the transportation table?",
+        "show geometry types for transportation",
+        "transportation geometry types"
+      ]
+    },
+    {
+      "canonical_id": "Q13",
+      "expected_intent": "meta",
+      "variants": [
+        "what area does the places data cover?",
+        "What is the spatial extent of the places dataset?",
+        "show me the extent of places",
+        "places bounding box"
+      ]
+    },
+    {
+      "canonical_id": "Q14",
+      "expected_intent": "meta",
+      "variants": [
+        "what's the bbox for buildings?",
+        "Please provide the geographic bounding box of all buildings",
+        "show the bounding box of the buildings table",
+        "buildings extent"
+      ]
+    },
+    {
+      "canonical_id": "Q15",
+      "expected_intent": "spatial",
+      "variants": [
+        "buildings within 500 meters of the Louvre",
+        "Show me every building that is no more than 500 meters from the Louvre",
+        "what buildings are near the Louvre, say within 500m?",
+        "500m radius around Louvre — buildings"
+      ]
+    },
+    {
+      "canonical_id": "Q16",
+      "expected_intent": "spatial",
+      "variants": [
+        "what's inside the box 2.33, 48.84, 2.36, 48.87?",
+        "Retrieve all features contained within the bounding box defined by coordinates 2.33, 48.84, 2.36, 48.87",
+        "show features in bbox 2.33 48.84 2.36 48.87",
+        "features within 2.33, 48.84 to 2.36, 48.87"
+      ]
+    },
+    {
+      "canonical_id": "Q17",
+      "expected_intent": "spatial",
+      "variants": [
+        "show me the school buildings",
+        "Display all buildings where the class is 'school'",
+        "get buildings with class school",
+        "filter buildings to class = school"
+      ]
+    },
+    {
+      "canonical_id": "Q18",
+      "expected_intent": "spatial",
+      "variants": [
+        "which land_use zones is the point 2.35, 48.86 inside?",
+        "Identify which land_use zones contain the coordinates longitude 2.35, latitude 48.86",
+        "land_use zones at point 2.35, 48.86",
+        "what zone contains lon 2.35 lat 48.86?"
+      ]
+    },
+    {
+      "canonical_id": "Q19",
+      "expected_intent": "spatial",
+      "variants": [
+        "everything within 1km of 48.86N 2.35E",
+        "Find all features located within a 1 kilometer radius of the point at 48.86 degrees north, 2.35 degrees east",
+        "1km radius search at 48.86, 2.35",
+        "features near 48.86N 2.35E within 1 kilometer"
+      ]
+    },
+    {
+      "canonical_id": "Q20",
+      "expected_intent": "spatial",
+      "variants": [
+        "3 nearest hospitals to Notre-Dame",
+        "Which are the three closest hospitals to the Notre-Dame cathedral?",
+        "find the 3 hospitals closest to Notre-Dame",
+        "top 3 hospitals by distance from Notre-Dame"
+      ]
+    },
+    {
+      "canonical_id": "Q21",
+      "expected_intent": "spatial",
+      "variants": [
+        "5 closest buildings to 48.86, 2.35",
+        "Identify the five nearest buildings to the coordinates latitude 48.86, longitude 2.35",
+        "find nearest 5 buildings to lat 48.86 lon 2.35",
+        "buildings closest to 48.86, 2.35 — top 5"
+      ]
+    },
+    {
+      "canonical_id": "Q22",
+      "expected_intent": "spatial",
+      "variants": [
+        "places within 2km of the Seine",
+        "Which places are located no more than 2 kilometers from the Seine river?",
+        "find places near the Seine, within 2 kilometers",
+        "2km buffer around Seine — what places?"
+      ]
+    },
+    {
+      "canonical_id": "Q23",
+      "expected_intent": "spatial",
+      "variants": [
+        "buildings near downtown within 800m, ordered by distance",
+        "Provide a list of buildings within an 800 meter radius of downtown, sorted by proximity",
+        "show buildings within 800 meters of downtown sorted by how close they are",
+        "800m from downtown — list buildings by distance"
+      ]
+    },
+    {
+      "canonical_id": "Q24",
+      "expected_intent": "spatial",
+      "variants": [
+        "distance between the hospital and the school?",
+        "What is the distance in meters from the hospital to the school?",
+        "how far apart are the hospital and school?",
+        "measure hospital to school distance"
+      ]
+    },
+    {
+      "canonical_id": "Q25",
+      "expected_intent": "spatial",
+      "variants": [
+        "what buildings fall in residential land_use zones?",
+        "Identify all buildings that are spatially contained within residential land_use zones",
+        "buildings in residential zones",
+        "show buildings inside residential land_use"
+      ]
+    },
+    {
+      "canonical_id": "Q26",
+      "expected_intent": "spatial",
+      "variants": [
+        "which zone is each building in?",
+        "Perform a spatial join between buildings and land_use to determine zone membership",
+        "join buildings to land_use zones",
+        "buildings with their land_use zone"
+      ]
+    },
+    {
+      "canonical_id": "Q27",
+      "expected_intent": "spatial",
+      "variants": [
+        "which transportation lines go through residential zones?",
+        "Identify all transportation features that spatially intersect residential land_use zones",
+        "transportation crossing residential land_use",
+        "roads through residential zones"
+      ]
+    },
+    {
+      "canonical_id": "Q28",
+      "expected_intent": "spatial",
+      "variants": [
+        "buildings within 500 meters of each hospital",
+        "For each hospital, find all buildings located within a 500 meter radius",
+        "match hospitals to nearby buildings within 500m",
+        "500m hospital-building proximity match"
+      ]
+    },
+    {
+      "canonical_id": "Q29",
+      "expected_intent": "spatial",
+      "variants": [
+        "200m buffer around schools",
+        "Generate a 200 meter buffer zone surrounding all school buildings",
+        "buffer all schools by 200 meters",
+        "create 200m school buffers"
+      ]
+    },
+    {
+      "canonical_id": "Q30",
+      "expected_intent": "spatial",
+      "variants": [
+        "1km dissolved buffer around hospitals",
+        "Create a merged 1 kilometer buffer encompassing all hospital locations",
+        "merge hospital buffers into one 1km zone",
+        "union 1km hospital buffers"
+      ]
+    },
+    {
+      "canonical_id": "Q31",
+      "expected_intent": "spatial",
+      "variants": [
+        "500m buffer on transportation lines",
+        "Create a 500 meter setback zone along each transportation segment",
+        "buffer all transportation features by 500 meters",
+        "transportation 500m corridor"
+      ]
+    },
+    {
+      "canonical_id": "Q32",
+      "expected_intent": "spatial",
+      "variants": [
+        "building count per land_use zone",
+        "How many buildings fall within each land_use zone?",
+        "count buildings in each land_use zone",
+        "buildings per zone count"
+      ]
+    },
+    {
+      "canonical_id": "Q33",
+      "expected_intent": "spatial",
+      "variants": [
+        "average height of buildings by zone",
+        "Calculate the mean building height for each land_use zone",
+        "avg building height in each land_use zone",
+        "mean height per land_use zone"
+      ]
+    },
+    {
+      "canonical_id": "Q34",
+      "expected_intent": "spatial",
+      "variants": [
+        "how many places per land_use zone?",
+        "Count the number of places contained within each land_use zone",
+        "places count by land_use zone",
+        "count places in each zone"
+      ]
+    },
+    {
+      "canonical_id": "Q35",
+      "expected_intent": "spatial",
+      "variants": [
+        "tall buildings per zone — over 20m only",
+        "Count the number of buildings exceeding 20 meters in height within each land_use zone",
+        "how many buildings taller than 20m in each zone?",
+        "count buildings with height > 20 per zone"
+      ]
+    },
+    {
+      "canonical_id": "Q36",
+      "expected_intent": "spatial",
+      "variants": [
+        "buildings near a hospital, like 500m",
+        "Identify all buildings located within a 500 meter radius of any hospital",
+        "show buildings within 500m of hospitals",
+        "500m hospital proximity — buildings"
+      ]
+    },
+    {
+      "canonical_id": "Q37",
+      "expected_intent": "spatial",
+      "variants": [
+        "total area of zones with 3+ buildings",
+        "Calculate the aggregate area of all land_use zones containing a minimum of 3 buildings",
+        "sum up areas of land_use zones that have at least 3 buildings",
+        "area of zones where building count >= 3"
+      ]
+    },
+    {
+      "canonical_id": "Q38",
+      "expected_intent": "spatial",
+      "variants": [
+        "make a building density layer by zone",
+        "Generate a building density heat map aggregated by land_use zone and materialize it for the web map",
+        "create building density per zone layer for the map",
+        "save building count by zone as a layer"
+      ]
+    },
+    {
+      "canonical_id": "Q39",
+      "expected_intent": "meta",
+      "variants": [
+        "what changed in buildings since last week?",
+        "What changed in the buildings table since the last snapshot?",
+        "diff buildings vs last week's snapshot",
+        "buildings changes since last snapshot"
+      ]
+    },
+    {
+      "canonical_id": "Q40",
+      "expected_intent": "meta",
+      "variants": [
+        "any snapshots for buildings?",
+        "List all available snapshots for the buildings table",
+        "show buildings snapshot history",
+        "what versions exist for the buildings table?"
+      ]
+    },
+    {
+      "canonical_id": "Q41",
+      "expected_intent": "meta",
+      "variants": [
+        "show buildings at the first snapshot",
+        "Display the buildings data as it existed at the earliest available snapshot",
+        "what did buildings look like at the first snapshot?",
+        "buildings at earliest version"
+      ]
+    },
+    {
+      "canonical_id": "Q42",
+      "expected_intent": "meta",
+      "variants": [
+        "buildings data on March 1 2026",
+        "Show me what the buildings table looked like as of March 1, 2026",
+        "What did the buildings look like on March 1, 2026?",
+        "time travel buildings to March 1, 2026"
+      ]
+    },
+    {
+      "canonical_id": "Q43",
+      "expected_intent": "meta",
+      "variants": [
+        "give me buildings as geojson",
+        "Export the entire buildings table in GeoJSON format",
+        "download buildings as GeoJSON",
+        "buildings to geojson"
+      ]
+    },
+    {
+      "canonical_id": "Q44",
+      "expected_intent": "meta",
+      "variants": [
+        "export schools with names as geojson",
+        "Export only the school buildings including their name attributes as GeoJSON",
+        "download just schools with names as GeoJSON",
+        "geojson export of schools with names"
+      ]
+    },
+    {
+      "canonical_id": "Q45",
+      "expected_intent": "spatial",
+      "variants": [
+        "save hospitals from places as a layer",
+        "Materialize all hospital records from the places table as a new named layer called nearby_hospitals",
+        "create a layer with hospitals from places",
+        "materialize places hospitals as nearby_hospitals"
+      ]
+    },
+    {
+      "canonical_id": "Q46",
+      "expected_intent": "spatial",
+      "variants": [
+        "make a scratch table of residential buildings",
+        "Create a scratch layer containing all buildings that fall within residential land_use zones",
+        "save buildings in residential zones as a scratch layer",
+        "materialize residential zone buildings for the webmap"
+      ]
+    },
+    {
+      "canonical_id": "Q47",
+      "expected_intent": "spatial",
+      "variants": [
+        "what's near the center?",
+        "Display all features located in proximity to the center of the dataset",
+        "show nearby features around the center",
+        "features near center"
+      ]
+    },
+    {
+      "canonical_id": "Q48",
+      "expected_intent": "spatial",
+      "variants": [
+        "buildings next to land_use zones",
+        "Show buildings that are in close proximity to land_use zone boundaries",
+        "find buildings near land_use zones",
+        "buildings adjacent to zones"
+      ]
+    },
+    {
+      "canonical_id": "Q49",
+      "expected_intent": "spatial",
+      "variants": [
+        "features within 500 of that point",
+        "Retrieve all features located within 500 units of the specified point",
+        "find stuff within 500 of the point",
+        "500 radius from point — what's there?"
+      ]
+    },
+    {
+      "canonical_id": "Q50",
+      "expected_intent": "meta",
+      "variants": [
+        "what do we have?",
+        "What data is currently available in the database?",
+        "show me all available tables",
+        "list all data"
+      ]
+    },
+    {
+      "canonical_id": "Q51",
+      "expected_intent": "spatial",
+      "variants": [
+        "map schools with 1km service areas",
+        "Create a visualization of all school locations with a 1 kilometer service area buffer",
+        "show schools with 1km buffers on the map",
+        "1km school service area layer"
+      ]
+    },
+    {
+      "canonical_id": "Q52",
+      "expected_intent": "analytics",
+      "variants": [
+        "more buildings in residential or commercial?",
+        "Compare the building count between residential and commercial areas",
+        "which has more buildings, residential or commercial zones?",
+        "residential vs commercial building count"
+      ]
+    }
+  ]
+}
