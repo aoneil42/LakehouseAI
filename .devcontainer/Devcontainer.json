@@ -1,0 +1,73 @@
+{
+  "name": "LakehouseAI",
+
+  // Base image with Docker Compose support inside the Codespace
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+
+  "features": {
+    // Docker-in-Docker: lets us run docker compose inside the Codespace
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "dockerDashComposeVersion": "v2"
+    },
+    // Python for local dev/testing without rebuilding containers
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    },
+    // Node for webmap dev mode
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+
+  // 8-core / 32GB — the stack needs ~12GB RAM across all containers.
+  // 4-core / 16GB works but will be tight if you also run the agent.
+  "hostRequirements": {
+    "cpus": 8,
+    "memory": "32gb",
+    "storage": "64gb"
+  },
+
+  // Runs once when the Codespace is first created
+  "postCreateCommand": ".devcontainer/setup.sh",
+
+  // Runs every time the Codespace starts (including rebuilds)
+  "postStartCommand": "cd lakehouse && docker compose up -d && sleep 5 && ./bootstrap.sh",
+
+  // Port forwarding — Codespaces auto-generates URLs for each
+  "forwardPorts": [
+    80,     // Webmap (nginx)
+    3900,   // Garage S3 API
+    5050,   // pygeoapi (OGC API Features)
+    8000,   // Feature API (FastAPI)
+    8001,   // Esri GeoServices
+    8082,   // MCP Server
+    8181,   // LakeKeeper UI
+    8090    // Spatial Agent (optional)
+  ],
+
+  "portsAttributes": {
+    "80":   { "label": "Webmap",          "onAutoForward": "openBrowser" },
+    "3900": { "label": "Garage S3",       "onAutoForward": "silent" },
+    "5050": { "label": "OGC API",         "onAutoForward": "silent" },
+    "8000": { "label": "Feature API",     "onAutoForward": "silent" },
+    "8001": { "label": "Esri GeoServices","onAutoForward": "silent" },
+    "8082": { "label": "MCP Server",      "onAutoForward": "silent" },
+    "8181": { "label": "LakeKeeper",      "onAutoForward": "silent" },
+    "8090": { "label": "Spatial Agent",   "onAutoForward": "silent" }
+  },
+
+  // VS Code extensions for geo/Python/Docker dev
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-azuretools.vscode-docker",
+        "dbaeumer.vscode-eslint",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}
