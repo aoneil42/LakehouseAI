@@ -54,8 +54,8 @@ Upload geospatial data, serve it through three API standards (OGC, Esri, GeoParq
 git clone https://github.com/aoneil42/LakehouseAI.git
 cd LakehouseAI/lakehouse
 
-# Start the core stack
-docker compose up -d
+# Start the core stack (--profile local includes Garage S3 for dev)
+docker compose --profile local up -d
 
 # One-time bootstrap (generates secrets, creates S3 bucket + Iceberg warehouse)
 chmod +x bootstrap.sh
@@ -105,6 +105,22 @@ claude mcp add terminus-mcp --transport http --url http://localhost:8082/mcp
 ```
 
 See [`icebergmcp/README.md`](icebergmcp/) for all 19 tools and configuration.
+
+## CI/CD (GitLab → AWS EC2)
+
+The stack includes a GitLab CI/CD pipeline for automated deployment to EC2 with AWS S3 storage.
+
+**One-time EC2 setup:**
+```bash
+ssh ec2-user@<ip> 'bash -s' < deploy/setup-runner.sh
+# Then register the GitLab runner with your instance
+```
+
+**Required GitLab CI/CD variables:** `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`
+
+**Optional variables:** `DEPLOY_PROFILES` (default: `agent`), `SA_LLM_BACKEND` (`ollama` or `bedrock`), `BASEMAP_CONFIG`
+
+Push to `main` triggers build → deploy → verify. See [`deploy/`](deploy/) for scripts and [`deploy/env.template`](deploy/env.template) for all configuration options.
 
 ## Testing
 

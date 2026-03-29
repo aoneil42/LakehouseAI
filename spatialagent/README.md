@@ -126,21 +126,31 @@ The `SchemaBuilder` discovers available tables and columns via MCP `list_tables`
 docker compose --profile agent up -d
 ```
 
+## LLM Backends
+
+The agent supports three LLM backends:
+
+| Backend | Use Case | Setup |
+|---------|----------|-------|
+| **Ollama** (default) | Local dev, disconnected, EC2 | Containerized in `--profile agent` |
+| **vLLM** | High-throughput GPU inference | External vLLM server |
+| **Bedrock** | AWS managed models (Claude, Mistral) | IAM credentials, no local LLM needed |
+
+```bash
+# Ollama (default) — containerized, model in volume
+docker compose --profile agent up -d
+./scripts/pull-models.sh   # first run only
+
+# Bedrock — no Ollama needed
+SA_LLM_BACKEND=bedrock docker compose --profile agent up -d
+
+# External Ollama (e.g., on host machine)
+SA_OLLAMA_BASE_URL=http://host.docker.internal:11434 docker compose --profile agent up -d
+```
+
 ## Dev Setup
 
-1. Start Ollama on host:
-```bash
-ollama serve
-ollama pull devstral-small:latest
-```
-
-2. Run with dev Dockerfile:
-```bash
-docker build -f Dockerfile.dev -t spatial-agent-dev .
-docker run -p 8090:8090 spatial-agent-dev
-```
-
-Or run directly:
+Run directly (requires Ollama on host or Bedrock credentials):
 ```bash
 pip install -e ".[dev]"
 SA_LLM_BACKEND=ollama SA_OLLAMA_BASE_URL=http://localhost:11434 \
@@ -205,9 +215,11 @@ spatialagent/
 |----------|---------|-------------|
 | `SA_MCP_ENDPOINT` | `http://mcp-server:8082/mcp` | MCP server Streamable HTTP endpoint |
 | `SA_LAKEHOUSE_API` | `http://lakehouse-api:8000` | Lakehouse API base URL |
-| `SA_LLM_BACKEND` | `vllm` | LLM backend: `vllm` or `ollama` |
+| `SA_LLM_BACKEND` | `ollama` | LLM backend: `ollama`, `vllm`, or `bedrock` |
 | `SA_VLLM_BASE_URL` | `http://localhost:8000/v1` | vLLM OpenAI-compatible endpoint |
-| `SA_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `SA_OLLAMA_BASE_URL` | `http://ollama:11434` | Ollama API endpoint (containerized) |
+| `SA_BEDROCK_REGION` | `us-east-1` | AWS Bedrock region |
+| `SA_BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-4-20250514` | Bedrock model ID |
 | `SA_PRIMARY_MODEL` | `devstral-small-2` | Primary model (spatial queries) |
 | `SA_MID_MODEL` | `ministral-3-14b-instruct` | Mid-tier model (16GB GPU) |
 | `SA_FAST_MODEL` | `duckdb-nsql-7b` | Fast analytics specialist |

@@ -197,7 +197,7 @@ services:
 
 ## Configuration Reference
 
-All environment variables use the `SLM_` prefix (Spatial Lakehouse MCP), except Garage credentials which use `GARAGE_` for compatibility.
+All environment variables use the `SLM_` prefix (Terminus MCP), with S3 credentials also accepted via `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` or the legacy `GARAGE_KEY_ID`/`GARAGE_SECRET_KEY`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -205,16 +205,12 @@ All environment variables use the `SLM_` prefix (Spatial Lakehouse MCP), except 
 | `SLM_CATALOG_WAREHOUSE` | `warehouse` | Warehouse name in LakeKeeper |
 | `SLM_CATALOG_ALIAS` | `lakehouse` | DuckDB alias for the attached catalog |
 | `SLM_CATALOG_TOKEN` | (empty) | Bearer token for LakeKeeper auth |
-| `SLM_CATALOG_CLIENT_ID` | (empty) | OAuth2 client ID |
-| `SLM_CATALOG_CLIENT_SECRET` | (empty) | OAuth2 client secret |
-| `SLM_CATALOG_OAUTH2_SCOPE` | (empty) | OAuth2 scope |
-| `SLM_CATALOG_OAUTH2_SERVER_URI` | (empty) | OAuth2 token endpoint |
-| `GARAGE_KEY_ID` | (empty) | Garage S3 access key ID |
-| `GARAGE_SECRET_KEY` | (empty) | Garage S3 secret access key |
+| `S3_ACCESS_KEY_ID` | (empty) | S3 access key (also accepts `GARAGE_KEY_ID`) |
+| `S3_SECRET_ACCESS_KEY` | (empty) | S3 secret key (also accepts `GARAGE_SECRET_KEY`) |
 | `SLM_S3_ENDPOINT` | `localhost:3900` | S3 endpoint (host:port, no scheme) |
 | `SLM_S3_REGION` | `garage` | S3 region |
 | `SLM_S3_USE_SSL` | `false` | Use HTTPS for S3 |
-| `SLM_S3_URL_STYLE` | `path` | S3 URL style (path or vhost) |
+| `SLM_S3_URL_STYLE` | `path` | S3 URL style (`path` for Garage, `vhost` for AWS) |
 | `SLM_MAX_RESULT_ROWS` | `100` | Max rows returned per query |
 | `SLM_QUERY_TIMEOUT_SECONDS` | `30` | Query timeout |
 | `SLM_SERVER_PORT` | `8082` | MCP server port |
