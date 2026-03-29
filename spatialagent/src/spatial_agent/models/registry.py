@@ -5,8 +5,12 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
-async def detect_available_models(backend: str, base_url: str) -> list[str]:
+async def detect_available_models(
+    backend: str, base_url: str, settings=None
+) -> list[str]:
     try:
+        if backend == "bedrock":
+            return _detect_bedrock_models(settings)
         async with httpx.AsyncClient(timeout=10) as client:
             if backend == "vllm":
                 resp = await client.get(f"{base_url}/models")
@@ -21,6 +25,13 @@ async def detect_available_models(backend: str, base_url: str) -> list[str]:
     except Exception as e:
         logger.warning("Failed to detect models (%s): %s", backend, e)
     return []
+
+
+def _detect_bedrock_models(settings) -> list[str]:
+    """Return the configured Bedrock model ID as the available model list."""
+    if settings and settings.bedrock_model_id:
+        return [settings.bedrock_model_id]
+    return ["us.anthropic.claude-sonnet-4-20250514"]
 
 
 def select_model(intent: str, available: list[str], settings) -> str:

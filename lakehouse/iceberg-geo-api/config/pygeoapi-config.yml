@@ -13,16 +13,16 @@ server:
         default_items: 100
         max_items: 10000
     map:
-        url: https://tile.openstreetmap.org/{z}/{x}/{y}.png
-        attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>'
+        url: ${PYGEOAPI_MAP_URL:-https://tile.openstreetmap.org/{z}/{x}/{y}.png}
+        attribution: '${PYGEOAPI_MAP_ATTRIBUTION:-&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>}'
 
 logging:
     level: INFO
 
 metadata:
     identification:
-        title: Lakehouse OGC API
-        description: OGC API Features backed by the spatial Iceberg lakehouse
+        title: Terminus OGC API
+        description: OGC API Features — Terminus Cloud Native GIS Suite
         keywords:
             - iceberg
             - geospatial
@@ -35,7 +35,7 @@ metadata:
         name: Apache-2.0
         url: https://www.apache.org/licenses/LICENSE-2.0
     provider:
-        name: Lakehouse
+        name: Terminus GIS
         url: http://localhost
     contact:
         name: Admin

@@ -12,9 +12,11 @@ class Settings(BaseSettings):
     lakehouse_api: str = Field(default="http://lakehouse-api:8000")
 
     # LLM serving
-    llm_backend: str = Field(default="vllm", description="'vllm' or 'ollama'")
+    llm_backend: str = Field(default="vllm", description="'vllm', 'ollama', or 'bedrock'")
     vllm_base_url: str = Field(default="http://localhost:8000/v1")
     ollama_base_url: str = Field(default="http://localhost:11434")
+    bedrock_region: str = Field(default="us-east-1")
+    bedrock_model_id: str = Field(default="us.anthropic.claude-sonnet-4-20250514")
 
     # Model selection
     primary_model: str = Field(default="devstral-small-2")

@@ -1,6 +1,6 @@
-# Iceberg Geospatial API Server
+# Terminus Geospatial API Server
 
-Part of the [LakehouseAI](../../README.md) monorepo. A Python service that serves geospatial data stored in Apache Iceberg tables through two API surfaces:
+Part of the [Terminus GIS](../../README.md) monorepo. A Python service that serves geospatial data stored in Apache Iceberg tables through two API surfaces:
 
 1. **OGC API Features** (via pygeoapi) — standards-based geospatial API serving GeoJSON, GeoArrow/Arrow IPC, and HTML
 2. **Esri GeoServices REST** (via FastAPI) — `/FeatureServer` endpoints serving Esri PBF (protobuf) and Esri JSON for ArcGIS clients

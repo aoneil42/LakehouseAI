@@ -21,7 +21,12 @@ import pyarrow.ipc as ipc
 from fastapi import FastAPI, File, Form, Query, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 
-app = FastAPI(docs_url="/api/docs", openapi_url="/api/openapi.json")
+app = FastAPI(
+    title="Terminus GIS API",
+    description="Cloud Native GIS Suite — Iceberg-backed geospatial data platform",
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
+)
 
 CATALOG_URL = os.environ.get("CATALOG_URL", "http://lakekeeper:8181/catalog")
 
@@ -205,34 +210,45 @@ def startup() -> None:
 
 
 @app.get("/api/namespaces")
-def list_namespaces() -> list[str]:
-    """List available Iceberg namespaces as dotted paths."""
-    prefix = _get_catalog_prefix()
-    url = f"{CATALOG_URL}/v1/{prefix}/namespaces"
-    req = urllib.request.Request(url, headers={"Authorization": "Bearer dummy"})
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read())
-    return [
-        ".".join(ns) if isinstance(ns, list) else ns
-        for ns in data["namespaces"]
-    ]
+def list_namespaces(include_scratch: bool = False) -> list[str]:
+    """List available Iceberg namespaces as dotted paths.
 
-
-@app.get("/api/namespaces/tree")
-def list_namespaces_tree() -> list[list[str]]:
-    """List all namespaces as path arrays (supports nested namespaces).
-
-    Returns e.g. ``[["colorado"], ["colorado", "water"]]``.
+    Scratch namespaces (``_scratch_*``) are hidden by default.
+    Pass ``?include_scratch=true`` to include them.
     """
     prefix = _get_catalog_prefix()
     url = f"{CATALOG_URL}/v1/{prefix}/namespaces"
     req = urllib.request.Request(url, headers={"Authorization": "Bearer dummy"})
     with urllib.request.urlopen(req) as resp:
         data = json.loads(resp.read())
-    return [
-        ns if isinstance(ns, list) else [ns]
-        for ns in data["namespaces"]
-    ]
+    results = []
+    for ns in data["namespaces"]:
+        dotted = ".".join(ns) if isinstance(ns, list) else ns
+        if not include_scratch and dotted.startswith("_scratch_"):
+            continue
+        results.append(dotted)
+    return results
+
+
+@app.get("/api/namespaces/tree")
+def list_namespaces_tree(include_scratch: bool = False) -> list[list[str]]:
+    """List all namespaces as path arrays (supports nested namespaces).
+
+    Returns e.g. ``[["colorado"], ["colorado", "water"]]``.
+    Scratch namespaces (``_scratch_*``) are hidden by default.
+    """
+    prefix = _get_catalog_prefix()
+    url = f"{CATALOG_URL}/v1/{prefix}/namespaces"
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer dummy"})
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read())
+    results = []
+    for ns in data["namespaces"]:
+        path = ns if isinstance(ns, list) else [ns]
+        if not include_scratch and path[0].startswith("_scratch_"):
+            continue
+        results.append(path)
+    return results
 
 
 @app.get("/api/tables/{namespace}")
@@ -816,68 +832,70 @@ _UPLOAD_FORM_HTML = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Upload to Lakehouse</title>
+<title>Terminus &mdash; Data Upload</title>
+<link rel="icon" type="image/svg+xml" href="/terminus-icon.svg" />
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-         background: #f5f5f5; display: flex; justify-content: center; padding: 40px 16px; }
-  .card { background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-          padding: 32px; max-width: 720px; width: 100%; }
-  h1 { font-size: 20px; color: #333; margin-bottom: 4px; }
-  .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
-  label { display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 4px; }
-  input[type="text"], select { width: 100%; padding: 8px 10px; border: 1px solid #ccc;
-    border-radius: 6px; font-size: 14px; margin-bottom: 16px; }
+         background: #1e1e2e; display: flex; justify-content: center; padding: 40px 16px; }
+  .card { background: #1a1a2e; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+          padding: 32px; max-width: 720px; width: 100%; border: 1px solid #3a3a5c; }
+  h1 { font-size: 20px; color: #fff; margin-bottom: 4px; letter-spacing: 0.5px; }
+  .subtitle { font-size: 13px; color: #8888a0; margin-bottom: 24px; }
+  label { display: block; font-size: 13px; font-weight: 600; color: #a0a0b8; margin-bottom: 4px; }
+  input[type="text"], select { width: 100%; padding: 8px 10px; border: 1px solid #3a3a5c;
+    border-radius: 6px; font-size: 14px; margin-bottom: 16px; background: #252545; color: #c8c8d4; }
   input[type="text"]:focus, select:focus { outline: none; border-color: #1e90ff;
-    box-shadow: 0 0 0 2px rgba(30,144,255,0.15); }
-  .file-area { border: 2px dashed #ccc; border-radius: 8px; padding: 24px; text-align: center;
+    box-shadow: 0 0 0 2px rgba(30,144,255,0.2); }
+  .file-area { border: 2px dashed #3a3a5c; border-radius: 8px; padding: 24px; text-align: center;
     margin-bottom: 16px; cursor: pointer; transition: border-color 0.2s; }
-  .file-area:hover, .file-area.dragover { border-color: #1e90ff; background: #f0f8ff; }
+  .file-area:hover, .file-area.dragover { border-color: #1e90ff; background: rgba(30,144,255,0.05); }
   .file-area input { display: none; }
-  .file-area p { color: #888; font-size: 14px; }
-  .file-area .selected { color: #333; font-weight: 500; }
+  .file-area p { color: #8888a0; font-size: 14px; }
+  .file-area .selected { color: #c8c8d4; font-weight: 500; }
   .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
-  .check-row input { cursor: pointer; }
-  .check-row label { margin: 0; font-weight: 400; cursor: pointer; }
+  .check-row input { cursor: pointer; accent-color: #1e90ff; }
+  .check-row label { margin: 0; font-weight: 400; cursor: pointer; color: #c8c8d4; }
   .combo-wrap { position: relative; margin-bottom: 16px; }
   .combo-wrap input[type="text"] { margin-bottom: 0; padding-right: 28px; }
   .combo-btn { position: absolute; right: 1px; top: 1px; bottom: 1px; width: 28px;
-    background: transparent; border: none; cursor: pointer; font-size: 12px; color: #888;
+    background: transparent; border: none; cursor: pointer; font-size: 12px; color: #8888a0;
     display: flex; align-items: center; justify-content: center; border-radius: 0 6px 6px 0; }
-  .combo-btn:hover { background: #f0f0f0; color: #333; }
+  .combo-btn:hover { background: #252545; color: #c8c8d4; }
   .combo-list { position: absolute; top: 100%; left: 0; right: 0; max-height: 180px;
-    overflow-y: auto; background: #fff; border: 1px solid #ccc; border-top: none;
-    border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    overflow-y: auto; background: #252545; border: 1px solid #3a3a5c; border-top: none;
+    border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     z-index: 10; display: none; }
   .combo-list.show { display: block; }
-  .combo-item { padding: 7px 10px; font-size: 13px; cursor: pointer; }
-  .combo-item:hover, .combo-item.active { background: #e8f0fe; }
+  .combo-item { padding: 7px 10px; font-size: 13px; cursor: pointer; color: #c8c8d4; }
+  .combo-item:hover, .combo-item.active { background: rgba(30,144,255,0.15); }
   .combo-item.new-entry { color: #1e90ff; font-style: italic; }
-  .combo-empty { padding: 7px 10px; font-size: 12px; color: #999; font-style: italic; }
+  .combo-empty { padding: 7px 10px; font-size: 12px; color: #6868a0; font-style: italic; }
   button { width: 100%; padding: 10px; background: #1e90ff; color: #fff; border: none;
     border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer;
     transition: background 0.2s; }
   button:hover { background: #0b7dda; }
-  button:disabled { background: #aaa; cursor: not-allowed; }
+  button:disabled { background: #3a3a5c; color: #6868a0; cursor: not-allowed; }
   .btn-row { display: flex; gap: 8px; }
   .btn-row button { flex: 1; }
-  .btn-secondary { background: #888; }
-  .btn-secondary:hover { background: #666; }
+  .btn-secondary { background: #3a3a5c; }
+  .btn-secondary:hover { background: #4a4a6c; }
   .result { margin-top: 16px; padding: 12px; border-radius: 6px; font-size: 13px;
     white-space: pre-wrap; word-break: break-all; }
-  .result.ok { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
-  .result.err { background: #fbe9e7; color: #c62828; border: 1px solid #ef9a9a; }
-  .result.warn { background: #fff3e0; color: #e65100; border: 1px solid #ffcc80; }
+  .result.ok { background: rgba(46,125,50,0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.3); }
+  .result.err { background: rgba(198,40,40,0.15); color: #f87171; border: 1px solid rgba(248,113,113,0.3); }
+  .result.warn { background: rgba(230,81,0,0.15); color: #fb923c; border: 1px solid rgba(251,146,60,0.3); }
   .home-link { display: inline-block; margin-top: 16px; font-size: 13px; color: #1e90ff; }
   .schema-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
-  .schema-table th { text-align: left; padding: 6px 8px; background: #f0f0f0;
-    border-bottom: 2px solid #ddd; font-size: 11px; color: #666; text-transform: uppercase; }
-  .schema-table td { padding: 6px 8px; border-bottom: 1px solid #eee; }
-  .schema-table tr:hover { background: #f8f8f8; }
-  .schema-table select { padding: 3px 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
-  .sample-val { color: #666; font-size: 11px; font-family: monospace; max-width: 200px;
+  .schema-table th { text-align: left; padding: 6px 8px; background: #252545;
+    border-bottom: 2px solid #3a3a5c; font-size: 11px; color: #8888a0; text-transform: uppercase; }
+  .schema-table td { padding: 6px 8px; border-bottom: 1px solid #3a3a5c; color: #c8c8d4; }
+  .schema-table tr:hover { background: rgba(255,255,255,0.03); }
+  .schema-table select { padding: 3px 6px; border: 1px solid #3a3a5c; border-radius: 4px;
+    font-size: 13px; background: #252545; color: #c8c8d4; }
+  .sample-val { color: #6868a0; font-size: 11px; font-family: monospace; max-width: 200px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .geom-label { color: #999; font-style: italic; font-size: 12px; }
+  .geom-label { color: #6868a0; font-style: italic; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -885,7 +903,7 @@ _UPLOAD_FORM_HTML = """\
 
   <!-- Phase 1: File selection -->
   <div id="phase1">
-    <h1>Upload to Lakehouse</h1>
+    <h1>Terminus &mdash; Data Upload</h1>
     <p class="subtitle">Ingest GeoJSON or GeoParquet into the Iceberg catalog</p>
 
     <label for="namespace">Namespace</label>

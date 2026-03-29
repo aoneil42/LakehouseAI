@@ -33,8 +33,8 @@ logging.basicConfig(
 )
 
 app = FastAPI(
-    title="Iceberg GeoServices",
-    description="Esri GeoServices REST API backed by Apache Iceberg",
+    title="Terminus GeoServices",
+    description="Esri-compatible GeoServices REST API — Terminus Cloud Native GIS Suite",
     root_path=os.environ.get("ROOT_PATH", ""),
 )
 

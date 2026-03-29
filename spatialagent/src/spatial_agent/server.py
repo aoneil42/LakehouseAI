@@ -26,7 +26,7 @@ from .session import SessionManager
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Spatial Lakehouse Agent", version="0.1.0")
+app = FastAPI(title="Terminus AI Agent", version="0.1.0")
 
 session_manager = SessionManager()
 mcp_client = MCPClient(settings.mcp_endpoint)
@@ -36,6 +36,8 @@ llm_client = LLMClient(
     vllm_url=settings.vllm_base_url,
     ollama_url=settings.ollama_base_url,
     timeout=settings.query_timeout,
+    bedrock_region=settings.bedrock_region,
+    bedrock_model_id=settings.bedrock_model_id,
 )
 
 
@@ -101,7 +103,7 @@ async def chat(req: ChatRequest):
                             else settings.ollama_base_url
                         )
                         available = await detect_available_models(
-                            settings.llm_backend, base_url
+                            settings.llm_backend, base_url, settings=settings
                         )
                         model = available[0] if available else settings.primary_model
 
@@ -187,7 +189,7 @@ async def chat(req: ChatRequest):
                             else settings.ollama_base_url
                         )
                         available = await detect_available_models(
-                            settings.llm_backend, base_url
+                            settings.llm_backend, base_url, settings=settings
                         )
                         model = available[0] if available else settings.primary_model
 
@@ -224,7 +226,7 @@ async def chat(req: ChatRequest):
                 settings.vllm_base_url if settings.llm_backend == "vllm"
                 else settings.ollama_base_url
             )
-            available = await detect_available_models(settings.llm_backend, base_url)
+            available = await detect_available_models(settings.llm_backend, base_url, settings=settings)
             model = select_model(intent, available, settings)
 
             # Generate + execute with retry
@@ -315,7 +317,7 @@ async def health():
         settings.vllm_base_url if settings.llm_backend == "vllm"
         else settings.ollama_base_url
     )
-    available = await detect_available_models(settings.llm_backend, base_url)
+    available = await detect_available_models(settings.llm_backend, base_url, settings=settings)
     active = settings.active_model or (available[0] if available else "none")
     return {"status": "ok", "model": active}
 
@@ -326,6 +328,6 @@ async def models():
         settings.vllm_base_url if settings.llm_backend == "vllm"
         else settings.ollama_base_url
     )
-    available = await detect_available_models(settings.llm_backend, base_url)
+    available = await detect_available_models(settings.llm_backend, base_url, settings=settings)
     active = settings.active_model or (available[0] if available else "none")
     return {"available": available, "active": active}

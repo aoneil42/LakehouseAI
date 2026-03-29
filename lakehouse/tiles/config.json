@@ -1,0 +1,19 @@
+{
+  "options": {
+    "paths": {
+      "root": "/data",
+      "styles": "/data",
+      "mbtiles": "/data"
+    }
+  },
+  "styles": {
+    "terminus-dark": {
+      "style": "terminus-dark.json"
+    }
+  },
+  "data": {
+    "openmaptiles": {
+      "mbtiles": "planet.mbtiles"
+    }
+  }
+}

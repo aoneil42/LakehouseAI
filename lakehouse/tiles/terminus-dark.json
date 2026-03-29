@@ -1,0 +1,138 @@
+{
+  "version": 8,
+  "name": "Terminus Dark",
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "mbtiles://{openmaptiles}"
+    }
+  },
+  "glyphs": "{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#1a1a2e"
+      }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "paint": {
+        "fill-color": "#141428"
+      }
+    },
+    {
+      "id": "landcover",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landcover",
+      "paint": {
+        "fill-color": "#1e1e38",
+        "fill-opacity": 0.5
+      }
+    },
+    {
+      "id": "landuse",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "landuse",
+      "paint": {
+        "fill-color": "#222240",
+        "fill-opacity": 0.4
+      }
+    },
+    {
+      "id": "park",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "paint": {
+        "fill-color": "#1a2a1a",
+        "fill-opacity": 0.5
+      }
+    },
+    {
+      "id": "boundary",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "boundary",
+      "paint": {
+        "line-color": "#3a3a5c",
+        "line-width": 1,
+        "line-opacity": 0.6
+      }
+    },
+    {
+      "id": "waterway",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "waterway",
+      "paint": {
+        "line-color": "#1e90ff",
+        "line-width": 1,
+        "line-opacity": 0.4
+      }
+    },
+    {
+      "id": "transportation",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "paint": {
+        "line-color": "#2a2a4a",
+        "line-width": {
+          "base": 1.2,
+          "stops": [[5, 0.5], [10, 1], [14, 2]]
+        }
+      }
+    },
+    {
+      "id": "transportation-major",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["in", "class", "motorway", "trunk", "primary"],
+      "paint": {
+        "line-color": "#3a3a5c",
+        "line-width": {
+          "base": 1.2,
+          "stops": [[5, 1], [10, 2], [14, 4]]
+        }
+      }
+    },
+    {
+      "id": "building",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "minzoom": 13,
+      "paint": {
+        "fill-color": "#252545",
+        "fill-opacity": 0.7
+      }
+    },
+    {
+      "id": "place-label",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": ["==", "$type", "Point"],
+      "layout": {
+        "text-field": "{name}",
+        "text-size": {
+          "stops": [[3, 10], [8, 14], [12, 16]]
+        },
+        "text-max-width": 8
+      },
+      "paint": {
+        "text-color": "#8888a0",
+        "text-halo-color": "#1a1a2e",
+        "text-halo-width": 1.5
+      }
+    }
+  ]
+}

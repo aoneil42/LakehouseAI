@@ -1,6 +1,8 @@
-# LakehouseAI
+# Terminus GIS
 
-A geospatial data lakehouse with natural-language spatial queries. Upload geospatial data, serve it through three API standards (OGC, Esri, GeoParquet), visualize on a full-featured deck.gl webmap with GIS tools, and query with plain English via an AI agent.
+Cloud Native GIS Suite | AI & Analytics
+
+Upload geospatial data, serve it through three API standards (OGC, Esri, GeoParquet), visualize on a full-featured deck.gl webmap with GIS tools, and query with plain English via an AI spatial agent.
 
 ## Components
 
@@ -20,18 +22,16 @@ A geospatial data lakehouse with natural-language spatial queries. Upload geospa
            │ REST/GeoParquet                  │ WebSocket
            ▼                                  ▼
 ┌─────────────────────┐            ┌─────────────────────┐
-│   Lakehouse APIs    │            │   Spatial Agent     │
+│   Terminus APIs     │            │   Spatial Agent     │
 │  FastAPI · pygeoapi │            │   NL → SQL → MCP    │
 │  Esri GeoServices   │            │   (port 8090)       │
 │  (port 80)          │            └──────────┬──────────┘
 └──────────┬──────────┘                       │ MCP tools
-           │                                  ▼
-           │                       ┌─────────────────────┐
+           │                       ┌──────────▼──────────┐
            │                       │   MCP Server        │
            │                       │   19 spatial tools   │
            │                       │   (port 8082)       │
            │                       └──────────┬──────────┘
-           │                                  │
            └──────────────┬───────────────────┘
                           ▼
                ┌─────────────────────┐
@@ -39,6 +39,13 @@ A geospatial data lakehouse with natural-language spatial queries. Upload geospa
                │  LakeKeeper + S3    │
                │  (Garage or AWS)    │
                └─────────────────────┘
+
+  Optional services (activated via --profile):
+  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
+  │ Ollama (agent) │  │ TileServer     │  │ SedonaSpark    │
+  │ local LLM      │  │ (disconnected) │  │ (heavy)        │
+  │ port 11434     │  │ port 8070      │  │ port 8888      │
+  └────────────────┘  └────────────────┘  └────────────────┘
 ```
 
 ## Quick Start
@@ -66,22 +73,27 @@ See [`lakehouse/README.md`](lakehouse/) for full setup details, API documentatio
 - Git
 - `curl` (for bootstrap)
 
-## Optional: AI Agent
+## Deployment Profiles
 
-To enable natural-language spatial queries in the webmap chat panel:
+```bash
+docker compose up -d                                          # Core stack
+docker compose --profile agent up -d                          # + AI agent + Ollama
+docker compose --profile heavy up -d                          # + SedonaSpark
+docker compose --profile disconnected up -d                   # + bundled tileserver
+docker compose --profile agent --profile disconnected up -d   # Full air-gapped
+```
 
-1. Install [Ollama](https://ollama.ai) and pull a model:
-   ```bash
-   ollama pull devstral-small:latest
-   ```
+**First-run model pull** (after starting with `--profile agent`):
+```bash
+./scripts/pull-models.sh     # pulls devstral-small-2 into the Ollama container
+```
 
-2. Start the agent alongside the lakehouse:
-   ```bash
-   docker compose -f lakehouse/docker-compose.yml \
-     -f spatialagent/docker-compose.agent.yml up -d
-   ```
+**Environment overrides:**
+- `SA_LLM_BACKEND=bedrock` — use AWS Bedrock instead of local Ollama
+- `BASEMAP_CONFIG=basemaps-esri.json` — Esri portal basemaps
+- `BASEMAP_CONFIG=basemaps-disconnected.json` — bundled offline tiles
 
-See [`spatialagent/README.md`](spatialagent/) for configuration and model options.
+See [`spatialagent/README.md`](spatialagent/) for agent configuration and model options.
 
 ## MCP Server (AI Tool Access)
 
@@ -89,7 +101,7 @@ Connect any MCP-compatible client (Claude Desktop, Cursor, Claude Code) to query
 
 ```bash
 # Claude Code
-claude mcp add spatial-lakehouse --transport http --url http://localhost:8082/mcp
+claude mcp add terminus-mcp --transport http --url http://localhost:8082/mcp
 ```
 
 See [`icebergmcp/README.md`](icebergmcp/) for all 19 tools and configuration.

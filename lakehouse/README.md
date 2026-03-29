@@ -1,6 +1,6 @@
-# Spatial Lakehouse
+# Terminus Core
 
-A containerized geospatial data lakehouse with three API interfaces (Esri GeoServices, OGC API Features, GeoParquet), a deck.gl webmap, and Apache Iceberg table storage. Built for local development (Apple Silicon and x86-64) with a clear path to AWS deployment.
+The core Terminus GIS platform — a containerized geospatial data lakehouse with three API interfaces (Esri GeoServices, OGC API Features, GeoParquet), a deck.gl webmap, and Apache Iceberg table storage. Supports local dev, AWS, and fully disconnected (air-gapped) deployments.
 
 ## Architecture
 
@@ -93,6 +93,9 @@ The webmap is a full-featured GIS viewer with interactive tools:
 | **PostgreSQL** | 5432 | LakeKeeper catalog metadata |
 | **DuckDB** | - | Interactive SQL (exec into container) |
 | **MCP Server** | 8082 | AI agent access via Model Context Protocol |
+| **Spatial Agent** | 8090 | NL spatial queries (optional, `--profile agent`) |
+| **Ollama** | 11434 | Local LLM inference (optional, `--profile agent`) |
+| **TileServer** | 8070 | Bundled basemap tiles (optional, `--profile disconnected`) |
 | **SedonaSpark** | 8888 | JupyterLab (optional, `--profile heavy`) |
 
 ## Prerequisites
@@ -272,7 +275,7 @@ Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/cla
 ```json
 {
   "mcpServers": {
-    "spatial-lakehouse": {
+    "terminus-mcp": {
       "type": "streamable-http",
       "url": "http://localhost:8082/mcp"
     }
@@ -287,7 +290,7 @@ Go to Settings > MCP > Add new global MCP server, then add:
 ```json
 {
   "mcpServers": {
-    "spatial-lakehouse": {
+    "terminus-mcp": {
       "type": "streamable-http",
       "url": "http://localhost:8082/mcp"
     }
@@ -298,7 +301,7 @@ Go to Settings > MCP > Add new global MCP server, then add:
 ### Connecting from Claude Code
 
 ```bash
-claude mcp add spatial-lakehouse --transport http --url http://localhost:8082/mcp
+claude mcp add terminus-mcp --transport http --url http://localhost:8082/mcp
 ```
 
 ### Example Queries (via AI agent)
@@ -414,6 +417,8 @@ Your Iceberg tables, schemas, and SQL all stay the same.
 | Profile | RAM | Services |
 |---------|-----|----------|
 | Core (default) | ~4GB | Garage, LakeKeeper, Postgres, DuckDB, MCP, API, pygeoapi, geoservices, webmap |
+| Agent (`--profile agent`) | +16GB | Adds Spatial Agent + Ollama (devstral-small-2) |
+| Disconnected (`--profile disconnected`) | +1GB | Adds TileServer-GL for offline basemaps |
 | Heavy (`--profile heavy`) | +8-10GB | Adds SedonaSpark + JupyterLab |
 
 Memory limits are set per-service in `docker-compose.yml` and can be tuned.
@@ -434,7 +439,7 @@ the map in real time.
 
 ### Requirements
 
-- The `spatial-lakehouse-agent` container (see [`spatialagent/`](../spatialagent/)) running on port 8090
+- The spatial agent container (see [`spatialagent/`](../spatialagent/)) — activate with `--profile agent`
 
 ### Architecture
 
@@ -479,16 +484,20 @@ The agent lives in [`spatialagent/`](../spatialagent/) and joins the lakehouse
 Docker network via a compose overlay:
 
 ```bash
-# Start the lakehouse
-docker compose up -d
+# Start the lakehouse with AI agent
+docker compose --profile agent up -d
 
-# Start the agent (compose overlay from the spatialagent directory)
-docker compose -f docker-compose.yml \
-  -f ../spatialagent/docker-compose.agent.yml up -d
+# First run: pull the LLM model into the Ollama container
+./scripts/pull-models.sh
 ```
 
-The agent's `docker-compose.agent.yml` defines a `spatial-agent` service on port
-8090 that joins the `lakehouse` network. nginx proxies `/api/agent/` to it.
+The `agent` profile starts both the spatial agent (port 8090) and a containerized
+Ollama instance (port 11434). nginx proxies `/api/agent/` to the agent container.
+
+To use **AWS Bedrock** instead of local Ollama:
+```bash
+SA_LLM_BACKEND=bedrock docker compose --profile agent up -d
+```
 
 ### Session Isolation
 

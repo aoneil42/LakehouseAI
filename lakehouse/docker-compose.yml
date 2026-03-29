@@ -1,18 +1,24 @@
 ########################################################################
-#  Spatial Lakehouse — Unified Docker Compose
+#  Terminus GIS — Unified Docker Compose
 #  Garage · LakeKeeper · PostgreSQL · DuckDB+Spatial · MCP · APIs
 #  + Spatial Agent (optional) · SedonaSpark (optional)
-#
-#  Target: local dev (Apple Silicon + x86-64) via Claude Code
+#  + Ollama LLM (optional)   · Tileserver (optional, disconnected)
 #
 #  Quick start:
 #    docker compose up -d            # core stack
 #    ./bootstrap.sh                  # one-time Garage + LakeKeeper init
 #    docker compose exec duckdb /duckdb -init /config/init.sql
 #
-#  Optional services:
-#    docker compose --profile agent up -d        # spatial NL agent
-#    docker compose --profile heavy up sedona -d # SedonaSpark
+#  Profiles:
+#    docker compose --profile agent up -d              # + AI agent + Ollama
+#    docker compose --profile heavy up -d              # + SedonaSpark
+#    docker compose --profile disconnected up -d       # + bundled tileserver
+#    docker compose --profile agent --profile disconnected up -d  # air-gapped
+#
+#  Env var overrides:
+#    BASEMAP_CONFIG=basemaps-esri.json   — Esri portal basemaps
+#    SA_LLM_BACKEND=bedrock              — AWS Bedrock instead of Ollama
+#    SA_OLLAMA_BASE_URL=http://host.docker.internal:11434  — external Ollama
 #
 #  Endpoints:
 #    Webmap .................. http://localhost
@@ -23,6 +29,8 @@
 #    Esri GeoServices REST ... http://localhost:8001  (or /esri/ via nginx)
 #    MCP Server (AI agents) .. http://localhost:8082/mcp
 #    Spatial Agent ........... http://localhost:8090  (agent profile)
+#    Ollama LLM .............. http://localhost:11434 (agent profile)
+#    Tileserver .............. http://localhost:8070  (disconnected profile)
 #    SedonaSpark Jupyter ..... http://localhost:8888  (heavy profile)
 ########################################################################
 
@@ -300,7 +308,10 @@ services:
   #   Dev mode: cd webmap && npm run dev  (port 5173, with proxy)
   #   Docker:   docker compose up webmap  (port 80, nginx + proxy)
   webmap:
-    build: ./webmap
+    build:
+      context: ./webmap
+      args:
+        BASEMAP_CONFIG: "${BASEMAP_CONFIG:-basemaps.json}"
     container_name: webmap
     ports:
       - "80:80"
@@ -341,9 +352,11 @@ services:
       SA_LAKEHOUSE_API: "http://lakehouse-api:8000"
       SA_LLM_BACKEND: "${SA_LLM_BACKEND:-ollama}"
       SA_VLLM_BASE_URL: "${SA_VLLM_BASE_URL:-http://vllm:8000/v1}"
-      SA_OLLAMA_BASE_URL: "${SA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      SA_OLLAMA_BASE_URL: "${SA_OLLAMA_BASE_URL:-http://ollama:11434}"
       SA_PRIMARY_MODEL: "${SA_PRIMARY_MODEL:-devstral-small-2}"
       SA_ACTIVE_MODEL: "${SA_ACTIVE_MODEL:-}"
+      SA_BEDROCK_REGION: "${SA_BEDROCK_REGION:-us-east-1}"
+      SA_BEDROCK_MODEL_ID: "${SA_BEDROCK_MODEL_ID:-us.anthropic.claude-sonnet-4-20250514}"
     depends_on:
       mcp-server:
         condition: service_healthy
@@ -360,6 +373,67 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+  # ─── LLM: Ollama (containerized, agent profile) ──────────────────
+  #   Activated with:  docker compose --profile agent up -d
+  #   First run: docker compose exec ollama ollama pull devstral-small-2
+  #   Or use scripts/pull-models.sh for convenience.
+  #   Override with SA_OLLAMA_BASE_URL to use an external Ollama instance.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    profiles: ["agent"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    deploy:
+      resources:
+        limits:
+          memory: "${OLLAMA_MEM_LIMIT:-16g}"
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    restart: unless-stopped
+    networks:
+      - lakehouse
+
+  # ─── Tileserver: Bundled Basemaps (disconnected profile) ─────────
+  #   Activated with:  docker compose --profile disconnected up -d
+  #   Place .mbtiles files in lakehouse/tiles/ directory.
+  #   See tiles/README.md for download instructions.
+  tileserver:
+    image: maptiler/tileserver-gl-light:latest
+    container_name: tileserver
+    profiles: ["disconnected"]
+    ports:
+      - "8070:8080"
+    volumes:
+      - ./tiles:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging: *default-logging
     restart: unless-stopped
     networks:
@@ -412,6 +486,7 @@ volumes:
   pg-data:
   duckdb-data:
   sedona-opt:
+  ollama-models:
 
 networks:
   lakehouse:

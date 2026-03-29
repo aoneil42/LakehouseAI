@@ -3,13 +3,43 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Spatial Lakehouse</title>
+    <title>Terminus GIS</title>
+    <link rel="icon" type="image/svg+xml" href="/terminus-icon.svg" />
   </head>
   <body>
     <div id="sidebar">
       <div class="sidebar-header">
-        <h1 class="sidebar-title">Spatial Lakehouse</h1>
-        <p class="sidebar-subtitle">Geospatial Data Platform</p>
+        <div class="sidebar-logo">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="48" height="48">
+            <!-- Hex outline -->
+            <polygon points="40,4 72,22 72,58 40,76 8,58 8,22" fill="none" stroke="#3a7bd5" stroke-width="1.5" opacity="0.5"/>
+            <polygon points="40,14 62,26 62,54 40,66 18,54 18,26" fill="none" stroke="#3a7bd5" stroke-width="1" opacity="0.3"/>
+            <!-- Connection lines -->
+            <line x1="40" y1="20" x2="26" y2="38" stroke="#3a7bd5" stroke-width="1.2" opacity="0.6"/>
+            <line x1="40" y1="20" x2="54" y2="38" stroke="#3a7bd5" stroke-width="1.2" opacity="0.6"/>
+            <line x1="26" y1="38" x2="40" y2="56" stroke="#3a7bd5" stroke-width="1.2" opacity="0.6"/>
+            <line x1="54" y1="38" x2="40" y2="56" stroke="#3a7bd5" stroke-width="1.2" opacity="0.6"/>
+            <line x1="26" y1="38" x2="54" y2="38" stroke="#3a7bd5" stroke-width="1.2" opacity="0.6"/>
+            <line x1="40" y1="20" x2="58" y2="26" stroke="#3a7bd5" stroke-width="1" opacity="0.4"/>
+            <line x1="40" y1="20" x2="22" y2="26" stroke="#3a7bd5" stroke-width="1" opacity="0.4"/>
+            <line x1="40" y1="56" x2="22" y2="54" stroke="#3a7bd5" stroke-width="1" opacity="0.4"/>
+            <line x1="40" y1="56" x2="58" y2="54" stroke="#3a7bd5" stroke-width="1" opacity="0.4"/>
+            <!-- Blue nodes -->
+            <circle cx="40" cy="20" r="5" fill="#1e90ff"/>
+            <circle cx="26" cy="38" r="4" fill="#3a7bd5"/>
+            <circle cx="54" cy="38" r="4" fill="#3a7bd5"/>
+            <circle cx="40" cy="56" r="4.5" fill="#1e90ff"/>
+            <!-- Gold accent nodes -->
+            <circle cx="58" cy="26" r="3" fill="#D4A843"/>
+            <circle cx="22" cy="26" r="2.5" fill="#D4A843"/>
+            <circle cx="22" cy="54" r="2.5" fill="#D4A843"/>
+            <circle cx="58" cy="54" r="3" fill="#D4A843"/>
+            <!-- Center highlight -->
+            <circle cx="40" cy="38" r="3" fill="#D4A843" opacity="0.8"/>
+          </svg>
+        </div>
+        <h1 class="sidebar-title">Terminus</h1>
+        <p class="sidebar-subtitle">Cloud Native GIS Suite</p>
       </div>
       <nav class="sidebar-nav">
         <div class="sidebar-section">
@@ -65,7 +95,7 @@
         </div>
       </nav>
       <div class="sidebar-footer">
-        Apache Iceberg &middot; DuckDB &middot; deck.gl
+        Terminus GIS &middot; AI &amp; Analytics
       </div>
     </div>
     <button id="sidebar-toggle" class="sidebar-toggle" title="Collapse sidebar">&#x276E;</button>

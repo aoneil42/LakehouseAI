@@ -569,7 +569,7 @@ async function main() {
     try {
       const resp = await fetch(
         `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`,
-        { headers: { "User-Agent": "LakehouseAI-Webmap/1.0" } }
+        { headers: { "User-Agent": "TerminusGIS/1.0" } }
       );
       if (!resp.ok) return;
       const data = await resp.json();

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Esri Topographic",
+    "style": "https://portal.example.com/sharing/rest/content/items/ITEM_ID/resources/styles/root.json",
+    "token": "YOUR_PORTAL_TOKEN"
+  },
+  {
+    "name": "Esri Dark Gray",
+    "style": "https://portal.example.com/sharing/rest/content/items/ITEM_ID/resources/styles/root.json",
+    "token": "YOUR_PORTAL_TOKEN"
+  }
+]

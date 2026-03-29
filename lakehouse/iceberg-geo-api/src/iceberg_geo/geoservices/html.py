@@ -8,29 +8,32 @@ look and feel, with breadcrumb navigation and property listings.
 from html import escape
 
 _CSS = """\
-body { font-family: "Lucida Sans Unicode","Lucida Grande",Verdana,Arial,Helvetica,sans-serif;
-       font-size: 0.8em; color: #333; margin: 0; padding: 0; background: #fff; }
-#header { background: #e8e8e8; border-bottom: 1px solid #aaa; padding: 6px 12px; }
-#header h1 { font-size: 1.1em; margin: 0; font-weight: bold; color: #333; }
-#breadcrumbs { padding: 6px 12px; font-size: 0.9em; color: #555; border-bottom: 1px solid #ddd;
-               background: #f5f5f5; }
-#breadcrumbs a { color: #0066cc; text-decoration: none; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       font-size: 0.85em; color: #c8c8d4; margin: 0; padding: 0; background: #1e1e2e; }
+#header { background: #1a1a2e; border-bottom: 1px solid rgba(212,168,67,0.15); padding: 10px 16px;
+          display: flex; align-items: center; gap: 10px; }
+#header h1 { font-size: 1.1em; margin: 0; font-weight: 700; color: #fff;
+             letter-spacing: 1.5px; text-transform: uppercase; }
+#header .brand-sub { font-size: 0.8em; color: #a0a0b8; margin-left: 4px; }
+#breadcrumbs { padding: 6px 16px; font-size: 0.9em; color: #8888a0; border-bottom: 1px solid #3a3a5c;
+               background: #252545; }
+#breadcrumbs a { color: #1e90ff; text-decoration: none; }
 #breadcrumbs a:hover { text-decoration: underline; }
-#content { padding: 12px; }
-h2 { font-size: 1.05em; margin: 16px 0 8px 0; color: #333; border-bottom: 1px solid #ddd;
+#content { padding: 16px; }
+h2 { font-size: 1.05em; margin: 16px 0 8px 0; color: #e0e0f0; border-bottom: 1px solid #3a3a5c;
      padding-bottom: 4px; }
 .prop { margin: 4px 0; }
-.prop-name { font-weight: bold; color: #555; }
-.prop-value { color: #333; }
-a { color: #0066cc; text-decoration: none; }
+.prop-name { font-weight: bold; color: #8888a0; }
+.prop-value { color: #c8c8d4; }
+a { color: #1e90ff; text-decoration: none; }
 a:hover { text-decoration: underline; }
 ul { margin: 4px 0 4px 20px; padding: 0; }
 li { margin: 2px 0; }
 table.fields { border-collapse: collapse; margin: 8px 0; }
-table.fields th { background: #e8e8e8; border: 1px solid #ccc; padding: 4px 8px;
-                  text-align: left; font-size: 0.95em; }
-table.fields td { border: 1px solid #ccc; padding: 4px 8px; font-size: 0.95em; }
-.json-link { font-size: 0.85em; color: #888; margin-left: 8px; }
+table.fields th { background: #252545; border: 1px solid #3a3a5c; padding: 4px 8px;
+                  text-align: left; font-size: 0.95em; color: #a0a0b8; }
+table.fields td { border: 1px solid #3a3a5c; padding: 4px 8px; font-size: 0.95em; }
+.json-link { font-size: 0.85em; color: #6868a0; margin-left: 8px; }
 """
 
 
@@ -51,7 +54,7 @@ def _page(title: str, breadcrumbs: list[tuple[str, str]], body: str) -> str:
 <head><meta charset="utf-8"><title>{escape(title)}</title>
 <style>{_CSS}</style></head>
 <body>
-<div id="header"><h1>ArcGIS REST Services Directory</h1></div>
+<div id="header"><h1>Terminus</h1><span class="brand-sub">GeoServices REST Directory</span></div>
 <div id="breadcrumbs">{crumbs_html}</div>
 <div id="content">{body}</div>
 </body></html>"""
@@ -83,7 +86,7 @@ def render_rest_info(base_url: str, services: list[dict]) -> str:
     body += "</ul>"
 
     return _page(
-        "ArcGIS REST Services Directory",
+        "Terminus GeoServices",
         [("Home", None)],
         body,
     )

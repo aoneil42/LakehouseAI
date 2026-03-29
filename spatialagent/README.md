@@ -1,6 +1,8 @@
-# Spatial Lakehouse Agent
+# Terminus Spatial Agent
 
-Part of the [LakehouseAI](../README.md) monorepo. Natural-language spatial query agent for the Iceberg lakehouse. Users type questions in the webmap chat panel, and the agent classifies intent, routes discovery queries directly to MCP tools, generates spatial SQL for analytical queries, and pushes results to the map in real time. Runs as a standalone container (port 8090) joining the lakehouse docker-compose network.
+Part of the [Terminus GIS](../README.md) monorepo. Natural-language spatial query agent for the Iceberg lakehouse. Users type questions in the webmap chat panel, and the agent classifies intent, routes discovery queries directly to MCP tools, generates spatial SQL for analytical queries, and pushes results to the map in real time. Runs as a standalone container (port 8090) with a containerized Ollama LLM.
+
+Supports three LLM backends: **Ollama** (default, containerized), **vLLM**, and **AWS Bedrock**.
 
 ## Architecture
 

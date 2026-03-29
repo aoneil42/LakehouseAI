@@ -1,6 +1,6 @@
-# Spatial Lakehouse MCP
+# Terminus MCP Server
 
-Iceberg-native geospatial MCP server powered by DuckDB. Part of the [LakehouseAI](../README.md) monorepo.
+Iceberg-native geospatial MCP server powered by DuckDB. Part of the [Terminus GIS](../README.md) monorepo.
 
 Provides 19 tools for catalog discovery, spatial queries, analysis, and data management over an Apache Iceberg lakehouse. An LLM agent connects via the Model Context Protocol (MCP) and can explore schemas, run spatial SQL, perform point-in-polygon aggregation, export GeoJSON, and more — all through a single DuckDB connection.
 
