@@ -48,6 +48,7 @@ x-s3-creds: &s3-creds
   S3_REGION: "${S3_REGION:-garage}"
   S3_URL_STYLE: "${S3_URL_STYLE:-path}"
   S3_USE_SSL: "${S3_USE_SSL:-false}"
+  S3_PATH_STYLE: "${S3_PATH_STYLE:-true}"
   DUCKDB_EXTENSION_DIR: "${DUCKDB_EXTENSION_DIR:-}"
 
 services:

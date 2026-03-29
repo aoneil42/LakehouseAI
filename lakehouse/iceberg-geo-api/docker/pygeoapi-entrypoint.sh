@@ -68,6 +68,8 @@ def discover_tables():
 
     ns_data = api_get(f"{CATALOG_URL}/v1/{prefix}/namespaces")
     namespaces = [ns[0] if isinstance(ns, list) else ns for ns in ns_data.get("namespaces", [])]
+    # Filter out scratch namespaces (agent session temp data)
+    namespaces = [ns for ns in namespaces if not ns.startswith("_scratch_")]
 
     tables = []
     for ns in namespaces:
