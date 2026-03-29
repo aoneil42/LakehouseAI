@@ -132,19 +132,23 @@ def _init_connection() -> duckdb.DuckDBPyConnection:
 
     conn.execute("SET geometry_always_xy = true")
 
-    key_id = os.environ["GARAGE_KEY_ID"]
-    secret = os.environ["GARAGE_SECRET_KEY"]
+    key_id = os.environ.get("S3_ACCESS_KEY_ID") or os.environ.get("GARAGE_KEY_ID", "")
+    secret = os.environ.get("S3_SECRET_ACCESS_KEY") or os.environ.get("GARAGE_SECRET_KEY", "")
+    s3_endpoint = os.environ.get("S3_ENDPOINT", "garage:3900")
+    s3_region = os.environ.get("S3_REGION", "garage")
+    s3_url_style = os.environ.get("S3_URL_STYLE", "path")
+    s3_use_ssl = os.environ.get("S3_USE_SSL", "false")
 
     conn.execute(
         f"""
-        CREATE SECRET garage_s3 (
+        CREATE SECRET s3_creds (
             TYPE S3,
             KEY_ID '{key_id}',
             SECRET '{secret}',
-            REGION 'garage',
-            ENDPOINT 'garage:3900',
-            URL_STYLE 'path',
-            USE_SSL false
+            REGION '{s3_region}',
+            ENDPOINT '{s3_endpoint}',
+            URL_STYLE '{s3_url_style}',
+            USE_SSL {s3_use_ssl}
         )
         """
     )

@@ -1,0 +1,128 @@
+# Terminus GIS — GitLab CI/CD Pipeline
+#
+# Deploys to an EC2 instance via a shell runner.
+# All configuration is via GitLab CI/CD Variables (Settings → CI/CD → Variables).
+#
+# Required variables:
+#   S3_ACCESS_KEY_ID          — AWS S3 access key
+#   S3_SECRET_ACCESS_KEY      — AWS S3 secret key (masked)
+#   S3_ENDPOINT               — e.g. s3.us-east-1.amazonaws.com
+#   S3_REGION                 — e.g. us-east-1
+#   S3_BUCKET                 — e.g. terminus-lakehouse
+#
+# Optional variables (with defaults):
+#   DEPLOY_PROFILES           — "agent" (default). Space-separated profiles.
+#   SA_LLM_BACKEND            — "ollama" (default) or "bedrock"
+#   SA_BEDROCK_MODEL_ID       — Bedrock model ID (if backend=bedrock)
+#   BASEMAP_CONFIG            — "basemaps.json" (default)
+#   OLLAMA_MEM_LIMIT          — "16g" (default)
+#   LAKEKEEPER_PG_ENCRYPTION_KEY — auto-generated if not set
+
+variables:
+  # Defaults — override in GitLab CI/CD Variables
+  DEPLOY_PROFILES: "agent"
+  SA_LLM_BACKEND: "ollama"
+  BASEMAP_CONFIG: "basemaps.json"
+  OLLAMA_MEM_LIMIT: "16g"
+  S3_URL_STYLE: "vhost"
+  S3_USE_SSL: "true"
+  S3_PATH_STYLE: "false"
+  S3_FLAVOR: "aws"
+
+stages:
+  - build
+  - deploy
+  - verify
+
+# ─── Build ────────────────────────────────────────────────────────────
+build:
+  stage: build
+  tags:
+    - terminus
+    - ec2
+  script:
+    - echo "Building Terminus GIS images..."
+    - cd lakehouse
+    # Write .env so compose can resolve variables during build
+    - |
+      cat > .env <<EOF
+      S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}
+      S3_ENDPOINT=${S3_ENDPOINT}
+      S3_REGION=${S3_REGION}
+      S3_BUCKET=${S3_BUCKET}
+      S3_URL_STYLE=${S3_URL_STYLE}
+      S3_USE_SSL=${S3_USE_SSL}
+      S3_PATH_STYLE=${S3_PATH_STYLE}
+      S3_FLAVOR=${S3_FLAVOR}
+      BASEMAP_CONFIG=${BASEMAP_CONFIG}
+      LAKEKEEPER_PG_ENCRYPTION_KEY=${LAKEKEEPER_PG_ENCRYPTION_KEY:-$(openssl rand -hex 32)}
+      PYGEOAPI_SERVER_URL=auto
+      SA_LLM_BACKEND=${SA_LLM_BACKEND}
+      OLLAMA_MEM_LIMIT=${OLLAMA_MEM_LIMIT}
+      EOF
+    # Build all profile images
+    - PROFILE_FLAGS=""
+    - for p in $DEPLOY_PROFILES; do PROFILE_FLAGS="$PROFILE_FLAGS --profile $p"; done
+    - docker compose $PROFILE_FLAGS build
+  only:
+    - main
+
+# ─── Deploy ───────────────────────────────────────────────────────────
+deploy:
+  stage: deploy
+  tags:
+    - terminus
+    - ec2
+  script:
+    - echo "Deploying Terminus GIS..."
+    - chmod +x deploy/deploy.sh
+    - ./deploy/deploy.sh
+  environment:
+    name: production
+    url: http://$CI_SERVER_HOST
+  only:
+    - main
+  dependencies:
+    - build
+
+# ─── Verify ───────────────────────────────────────────────────────────
+verify:
+  stage: verify
+  tags:
+    - terminus
+    - ec2
+  script:
+    - echo "Running health checks..."
+    - sleep 10  # give services time to stabilize after deploy
+    - |
+      FAILED=0
+      check() {
+        if curl -sf -o /dev/null "$1" 2>/dev/null; then
+          echo "✓ $2"
+        else
+          echo "✗ $2 — $1 not responding"
+          FAILED=$((FAILED + 1))
+        fi
+      }
+      check "http://localhost:80/" "Webmap"
+      check "http://localhost:8000/api/docs" "Feature API"
+      check "http://localhost:8181/health" "LakeKeeper"
+      check "http://localhost:8082/mcp" "MCP Server" || true
+      check "http://localhost:5050/" "OGC API"
+      check "http://localhost:8001/esri/rest/info" "Esri GeoServices"
+      if echo "$DEPLOY_PROFILES" | grep -q "agent"; then
+        check "http://localhost:8090/health" "Spatial Agent"
+        check "http://localhost:11434/api/tags" "Ollama"
+      fi
+      if [ "$FAILED" -gt 0 ]; then
+        echo ""
+        echo "⚠ ${FAILED} service(s) failed health check"
+        exit 1
+      fi
+      echo ""
+      echo "✅ All services healthy"
+  only:
+    - main
+  dependencies:
+    - deploy

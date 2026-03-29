@@ -1,7 +1,7 @@
 """Configuration via environment variables with SLM_ prefix."""
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 
 class Settings(BaseSettings):
@@ -39,13 +39,19 @@ class Settings(BaseSettings):
                     "'vended-credentials' for Docker (uses LakeKeeper's S3 credentials)"
     )
 
-    # Garage S3 connection
+    # S3 connection (Garage for local dev, AWS S3 for production)
     s3_endpoint: str = Field(
         default="localhost:3900",
-        description="Garage S3 endpoint (host:port, no scheme)",
+        description="S3 endpoint (host:port, no scheme)",
     )
-    s3_access_key_id: str = Field(default="", alias="GARAGE_KEY_ID")
-    s3_secret_access_key: str = Field(default="", alias="GARAGE_SECRET_KEY")
+    s3_access_key_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("S3_ACCESS_KEY_ID", "SLM_S3_ACCESS_KEY_ID", "GARAGE_KEY_ID"),
+    )
+    s3_secret_access_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("S3_SECRET_ACCESS_KEY", "SLM_S3_SECRET_ACCESS_KEY", "GARAGE_SECRET_KEY"),
+    )
     s3_region: str = Field(default="garage", description="S3 region")
     s3_use_ssl: bool = Field(default=False, description="Use HTTPS for S3")
     s3_url_style: str = Field(default="path", description="S3 URL style: path or vhost")

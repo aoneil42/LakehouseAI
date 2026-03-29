@@ -10,16 +10,16 @@ LOAD spatial;
 
 SET geometry_always_xy = true;
 
--- S3 credentials for direct file access (GeoParquet on Garage)
+-- S3 credentials for direct file access (GeoParquet on S3 or Garage)
 -- Values are templated at runtime by duckdb-entrypoint.sh
-CREATE SECRET garage_s3 (
+CREATE SECRET s3_creds (
     TYPE S3,
-    KEY_ID '${GARAGE_KEY_ID}',
-    SECRET '${GARAGE_SECRET_KEY}',
-    REGION 'garage',
-    ENDPOINT 'garage:3900',
-    URL_STYLE 'path',
-    USE_SSL false
+    KEY_ID '${S3_ACCESS_KEY_ID}',
+    SECRET '${S3_SECRET_ACCESS_KEY}',
+    REGION '${S3_REGION}',
+    ENDPOINT '${S3_ENDPOINT}',
+    URL_STYLE '${S3_URL_STYLE}',
+    USE_SSL ${S3_USE_SSL}
 );
 
 -- Iceberg REST catalog secret
@@ -39,7 +39,7 @@ ATTACH 'lakehouse' AS lakehouse (
 .print '──────────────────────────────────────────'
 .print '  DuckDB + Spatial + Iceberg ready'
 .print '  Catalog:  lakehouse  (via LakeKeeper)'
-.print '  Storage:  Garage S3  (http://garage:3900)'
+.print '  Storage:  S3  (${S3_ENDPOINT})'
 .print '──────────────────────────────────────────'
 .print ''
 .print '  Try: SHOW ALL TABLES;'

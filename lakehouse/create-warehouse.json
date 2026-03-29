@@ -2,17 +2,17 @@
   "warehouse-name": "lakehouse",
   "storage-profile": {
     "type": "s3",
-    "bucket": "lakehouse",
-    "region": "garage",
-    "path-style-access": true,
-    "endpoint": "http://garage:3900",
-    "flavor": "minio",
+    "bucket": "${S3_BUCKET}",
+    "region": "${S3_REGION}",
+    "path-style-access": ${S3_PATH_STYLE},
+    "endpoint": "http://${S3_ENDPOINT}",
+    "flavor": "${S3_FLAVOR}",
     "sts-enabled": false
   },
   "storage-credential": {
     "type": "s3",
     "credential-type": "access-key",
-    "aws-access-key-id": "${GARAGE_KEY_ID}",
-    "aws-secret-access-key": "${GARAGE_SECRET_KEY}"
+    "aws-access-key-id": "${S3_ACCESS_KEY_ID}",
+    "aws-secret-access-key": "${S3_SECRET_ACCESS_KEY}"
   }
 }
